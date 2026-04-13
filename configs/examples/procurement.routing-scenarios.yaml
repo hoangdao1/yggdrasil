@@ -1,0 +1,38 @@
+# Routing scenario documentation for the procurement workflow.
+#
+# Each scenario describes what routing outcome to expect given a particular
+# workflow state and agent result. Use these as a reference when writing
+# integration tests or verifying routing behavior manually.
+
+scenarios:
+  - name: intake-default
+    agent_id: intake
+    description: Low-value request routes to finalize via decision_table default
+    state:
+      request:
+        amount: 100
+        department: ops
+    result:
+      text: standard request
+    expected_mode: decision_table
+    expected_target_id: finalize
+
+  - name: intake-high-value
+    agent_id: intake
+    description: High-value request (>5000) routes to manager_approval via decision_table rule
+    state:
+      request:
+        amount: 10000
+        department: finance
+    result:
+      text: urgent procurement
+    expected_mode: decision_table
+    expected_target_id: manager_approval
+
+  - name: finalize-default
+    agent_id: finalize
+    description: Finalize always routes to __END__ via routing_table
+    result:
+      text: approved request
+    expected_mode: routing_table
+    expected_target_id: __END__
