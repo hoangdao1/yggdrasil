@@ -1,0 +1,11 @@
+system,task_id,task_name,wall_ms,agent_calls,num_turns,tool_calls,system_prompt_chars,output_chars,hops,context_nodes_injected,tools_composed,cost_usd,passed_eval,error
+graph-agent-cc,research_synthesis,Research + Synthesis (2-agent),154816.81000001845,2,1,0,362,10192,2,,,,True,
+baseline-single,research_synthesis,Research + Synthesis (2-agent),108259.84120898647,1,7,6,259,15611,,,,0.2856727,True,
+baseline-multi,research_synthesis,Research + Synthesis (2-agent),135989.67150002136,2,7,5,362,9942,,,,0.29255135000000004,True,
+graph-agent-cc,code_analysis,Codebase Analysis + Review (2-agent),28859.129082993604,0,0,0,401,0,,,,,False,"Command failed with exit code 1 (exit code: 1)
+Error output: Check stderr output for details"
+baseline-single,code_analysis,Codebase Analysis + Review (2-agent),95275.86920800968,1,13,12,212,6805,,,,0.17873775,False,
+baseline-multi,code_analysis,Codebase Analysis + Review (2-agent),165724.14641699288,2,19,17,401,11358,,,,0.27933255,True,
+graph-agent-cc,simple_qa,"Simple Q&A (1-agent, no tools)",10932.277834013803,1,1,0,67,1572,1,,,,True,
+baseline-single,simple_qa,"Simple Q&A (1-agent, no tools)",14853.297250025207,1,1,0,77,1497,,,,0.0100698,True,
+baseline-multi,simple_qa,"Simple Q&A (1-agent, no tools)",14716.76504201605,1,1,0,67,1640,,,,0.0105045,True,

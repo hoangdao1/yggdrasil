@@ -1,0 +1,77 @@
+graph:
+  name: procurement
+  graph_version: v2
+  group_id: finance
+  description: Purchase request workflow with approval and ERP submission.
+
+nodes:
+  - node_id: intake
+    node_type: agent
+    name: Intake
+    system_prompt: Collect the procurement request details clearly.
+    routing_table:
+      default: manager_approval
+    decision_table:
+      strict: true
+      rules:
+        - name: high_value
+          target_node_id: manager_approval
+          conditions:
+            - source: state
+              path: request.amount
+              operator: gt
+              value: 5000
+      default_target_id: finalize
+    state_schema:
+      type: object
+      properties:
+        request:
+          type: object
+          properties:
+            amount:
+              type: number
+            department:
+              type: string
+    constraint_rules:
+      - name: request_department_required
+        source: state
+        path: request.department
+        operator: exists
+        message: Procurement requests must declare a department.
+
+  - node_id: manager_approval
+    node_type: approval
+    name: Manager Approval
+    instructions: Approve or reject the procurement request.
+    assignees: ["finance-manager"]
+    sla_seconds: 3600
+    escalation_target: "director-on-call"
+    input_key: approval
+    approved_target_id: finalize
+    rejected_target_id: reject
+
+  - node_id: finalize
+    node_type: agent
+    name: Finalize
+    system_prompt: Summarize the approved procurement request.
+    routing_table:
+      default: "__END__"
+
+  - node_id: reject
+    node_type: agent
+    name: Reject
+    system_prompt: Explain why the request was rejected.
+    routing_table:
+      default: "__END__"
+
+  - node_id: erp_submit
+    node_type: tool
+    name: erp_submit
+    callable_ref: yggdrasil.tools.echo.echo
+    execution_policy:
+      idempotency_key: auto
+
+edges:
+  - edge_type: HAS_TOOL
+    src_id: finalize
+    dst_id: erp_submit
