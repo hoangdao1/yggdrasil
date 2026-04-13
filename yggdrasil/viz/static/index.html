@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Yggdrasil Trace Visualizer</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="header">
+    <span class="logo">Yggdrasil</span>
+    <span class="sep">|</span>
+    <span class="query" id="query-text">Waiting for trace...</span>
+    <span class="session-id" id="session-id-text"></span>
+  </div>
+
+  <div id="status-bar">
+    <span class="badge badge-conn" id="conn-badge">Connecting...</span>
+    <span class="badge badge-live" id="run-status-badge">Waiting</span>
+    <span id="stat-hops">0 hops</span>
+    <span id="stat-events">0 events</span>
+    <span id="stat-agents">0 agents</span>
+    <span id="stat-tools">0 tool calls</span>
+    <span id="stat-errors">0 errors</span>
+    <span id="stat-warnings">0 warnings</span>
+    <span id="stat-inflight" class="stat-inflight" style="display:none">0 in flight</span>
+    <span id="stat-oldest" class="stat-oldest"></span>
+  </div>
+
+  <div id="main">
+    <div id="graph-pane">
+      <div id="trace-toolbar" class="pane-toolbar">
+        <div class="toolbar-group">
+          <span class="toolbar-label">Trace</span>
+          <button class="toolbar-btn active" data-lens="flow" id="trace-lens-flow">Flow</button>
+          <button class="toolbar-btn" data-lens="composition" id="trace-lens-composition">Composition</button>
+        </div>
+        <div class="toolbar-group">
+          <button class="toolbar-btn" id="trace-fit-btn">Fit</button>
+          <button class="toolbar-btn" id="trace-reset-btn">Reset</button>
+          <button class="toolbar-btn" id="trace-center-btn">Center Selected</button>
+        </div>
+      </div>
+
+      <div id="timeline-strip" style="display:none"></div>
+
+      <svg id="graph-svg">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L8,3 L0,6 Z" fill="#30363d"></path>
+          </marker>
+          <marker id="arrow-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L8,3 L0,6 Z" fill="#79c0ff"></path>
+          </marker>
+        </defs>
+      </svg>
+      <div id="graph-empty">
+        <span class="big">Waiting for trace data</span>
+        <span id="graph-empty-message">Run your graph and trace events will stream in real time.</span>
+      </div>
+
+      <svg id="db-svg"></svg>
+      <div id="db-empty">
+        <span class="big">Database canvas</span>
+        <span>Graph store snapshot not yet received.</span>
+      </div>
+
+      <div id="db-toolbar" class="pane-toolbar db-toolbar"></div>
+    </div>
+
+    <div id="sidebar">
+      <div id="inflight-strip" style="display:none"></div>
+      <div id="sidebar-tabs">
+        <div class="tab-group">
+          <div class="tab-group-label">Trace</div>
+          <div class="tab-group-tabs" role="tablist">
+            <div class="tab active" data-tab="run" role="tab" tabindex="0" aria-selected="true">Run</div>
+            <div class="tab" data-tab="events" role="tab" tabindex="0" aria-selected="false">Events</div>
+          </div>
+        </div>
+        <div class="tab-group">
+          <div class="tab-group-label">Store</div>
+          <div class="tab-group-tabs" role="tablist">
+            <div class="tab" data-tab="database" role="tab" tabindex="0" aria-selected="false">Database</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="triage-bar">
+        <input id="search-input" type="search" placeholder="Search events, nodes, tools, intents" />
+        <div class="triage-row">
+          <label class="triage-label" for="view-mode">View</label>
+          <select id="view-mode">
+            <option value="list">List</option>
+            <option value="tree">Tree</option>
+          </select>
+          <label class="triage-label" for="sort-mode">Sort</label>
+          <select id="sort-mode">
+            <option value="chronological">Chronological</option>
+            <option value="hop">Group by hop</option>
+          </select>
+          <button class="toggle-btn" id="errors-only-btn" type="button">Errors only</button>
+          <button class="toggle-btn" id="runtime-only-btn" type="button">Runtime only</button>
+        </div>
+        <div class="filter-chip-row" id="event-filter-row"></div>
+      </div>
+
+      <div id="sidebar-content">
+        <div id="tab-run"></div>
+        <div id="tab-events" style="display:none"></div>
+        <div id="tab-database" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
