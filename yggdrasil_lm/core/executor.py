@@ -28,9 +28,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal
 
-from yggdrasil.backends.llm import LLMBackend, ToolResult, default_backend
-from yggdrasil.core.edges import Edge, EdgeType
-from yggdrasil.core.nodes import (
+from yggdrasil_lm.backends.llm import LLMBackend, ToolResult, default_backend
+from yggdrasil_lm.core.edges import Edge, EdgeType
+from yggdrasil_lm.core.nodes import (
     AgentNode,
     ApprovalNode,
     AnyNode,
@@ -46,7 +46,7 @@ from yggdrasil.core.nodes import (
     SchemaNode,
     ToolNode,
 )
-from yggdrasil.core.store import GraphStore, _cosine, _normalize
+from yggdrasil_lm.core.store import GraphStore, _cosine, _normalize
 
 
 # ---------------------------------------------------------------------------
@@ -1101,7 +1101,7 @@ class GraphExecutor:
         Returns a ``BatchRun`` dataclass.
         """
         import warnings
-        from yggdrasil.batch import BatchExecutor
+        from yggdrasil_lm.batch import BatchExecutor
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             _batch = BatchExecutor(self.store, self, concurrency=concurrency)
@@ -1128,7 +1128,7 @@ class GraphExecutor:
             description="Serialized execution checkpoint",
             content=json.dumps(ctx.snapshot(), default=str),
             content_type="json",
-            source="yggdrasil.checkpoint",
+            source="checkpoint",
             group_id=ctx.session_id,
             attributes={
                 "origin": "checkpoint",
@@ -2128,8 +2128,8 @@ class GraphExecutor:
         - attributes["origin"] = "runtime" → discriminates from predefined nodes
           even when group_id is filtered by something other than session
         """
-        from yggdrasil.core.nodes import ContextNode
-        from yggdrasil.core.edges import Edge
+        from yggdrasil_lm.core.nodes import ContextNode
+        from yggdrasil_lm.core.edges import Edge
 
         content = output if isinstance(output, str) else str(output)
         ctx_node = ContextNode(

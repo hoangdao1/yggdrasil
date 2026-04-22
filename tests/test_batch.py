@@ -5,10 +5,10 @@ import warnings
 
 import pytest
 
-from yggdrasil.batch import BatchExecutor, BatchRun, BatchStatus, _item_node_id, _run_node_id
-from yggdrasil.core.executor import ExecutionContext
-from yggdrasil.core.nodes import AgentNode
-from yggdrasil.core.store import NetworkXGraphStore
+from yggdrasil_lm.batch import BatchExecutor, BatchRun, BatchStatus, _item_node_id, _run_node_id
+from yggdrasil_lm.core.executor import ExecutionContext
+from yggdrasil_lm.core.nodes import AgentNode
+from yggdrasil_lm.core.store import NetworkXGraphStore
 
 # BatchExecutor direct construction is deprecated in favour of executor.batch().
 # These tests exercise the implementation through BatchExecutor directly; suppress
@@ -431,7 +431,7 @@ def test_batch_executor_direct_construction_emits_deprecation_warning(store):
 @pytest.mark.filterwarnings("always::DeprecationWarning")
 async def test_executor_batch_method_runs_agent(store, agent):
     """executor.batch() is the preferred entry point and must work end-to-end."""
-    from yggdrasil.core.executor import GraphExecutor
+    from yggdrasil_lm.core.executor import GraphExecutor
     executor = GraphExecutor.__new__(GraphExecutor)
     # Patch with mock so no real LLM is needed
     mock = _MockExecutor()

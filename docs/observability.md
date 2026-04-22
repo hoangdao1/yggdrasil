@@ -33,7 +33,7 @@ Use terminal mode when you want a trace view without starting a server. No extra
 ### inspect_trace — Rich tree UI
 
 ```python
-from yggdrasil.trace_ui import inspect_trace
+from yggdrasil_lm.trace_ui import inspect_trace
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="hello")
 inspect_trace(ctx)
@@ -61,7 +61,7 @@ Falls back to `print_trace()` automatically when `rich` is not installed.
 ### print_trace — Plain-text fallback
 
 ```python
-from yggdrasil.trace_ui import print_trace
+from yggdrasil_lm.trace_ui import print_trace
 
 print_trace(ctx)
 ```
@@ -82,7 +82,7 @@ Use browser mode when you want an interactive UI with a graph store snapshot alo
 ### serve_trace — Interactive post-run view
 
 ```python
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.viz import serve_trace
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="hello")
 await serve_trace(ctx, store=executor.store)
@@ -100,7 +100,7 @@ The browser UI lets you:
 ### live_trace — Stream events during a run
 
 ```python
-from yggdrasil.viz import live_trace
+from yggdrasil_lm.viz import live_trace
 
 async with live_trace(executor) as viz:
     ctx = await executor.run(entry_node_id=agent.node_id, query="hello")
@@ -117,7 +117,7 @@ Use the data API when you want structured objects you can inspect, serialize, pa
 ### explain_run — Summarize a completed run
 
 ```python
-from yggdrasil.observability import explain_run
+from yggdrasil_lm.observability import explain_run
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="hello")
 summary = explain_run(ctx)
@@ -186,7 +186,7 @@ pip install -e ".[observe]"
 ```
 
 ```python
-from yggdrasil.observability import export_trace
+from yggdrasil_lm.observability import export_trace
 
 export_trace(ctx.trace, service_name="yggdrasil")
 ```

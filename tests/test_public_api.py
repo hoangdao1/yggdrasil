@@ -12,9 +12,9 @@ Layer model:
 
 from __future__ import annotations
 
-import yggdrasil.observability as obs
-import yggdrasil.trace_ui as tui
-import yggdrasil.viz as viz
+import yggdrasil_lm.observability as obs
+import yggdrasil_lm.trace_ui as tui
+import yggdrasil_lm.viz as viz
 
 
 # ---------------------------------------------------------------------------
@@ -66,25 +66,25 @@ def test_viz_all_contains_browser_functions():
 # ---------------------------------------------------------------------------
 
 def test_canonical_import_trace_ui():
-    from yggdrasil.trace_ui import inspect_trace, print_trace
+    from yggdrasil_lm.trace_ui import inspect_trace, print_trace
     assert callable(inspect_trace)
     assert callable(print_trace)
 
 
 def test_canonical_import_observability():
-    from yggdrasil.observability import explain_run
+    from yggdrasil_lm.observability import explain_run
     assert callable(explain_run)
 
 
 def test_canonical_import_viz():
-    from yggdrasil.viz import serve_trace, live_trace
+    from yggdrasil_lm.viz import serve_trace, live_trace
     assert callable(serve_trace)
     assert callable(live_trace)
 
 
 def test_top_level_namespace_re_exports_all_layers():
     """yggdrasil top-level re-exports functions from all three layers for convenience."""
-    import yggdrasil
+    import yggdrasil_lm
     assert hasattr(yggdrasil, "inspect_trace")
     assert hasattr(yggdrasil, "print_trace")
     assert hasattr(yggdrasil, "explain_run")

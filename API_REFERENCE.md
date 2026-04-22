@@ -111,7 +111,7 @@ The reference uses a consistent pattern:
 90% of use cases fit in five lines:
 
 ```python
-from yggdrasil.app import GraphApp
+from yggdrasil_lm.app import GraphApp
 
 app   = GraphApp()
 agent = await app.add_agent("Bot", system_prompt="You are a helpful assistant.")
@@ -130,7 +130,7 @@ to work directly with graph primitives.
 A beginner-friendly facade over the core primitives. Use `GraphApp` when you want a task-oriented API that handles store setup, executor creation, and edge wiring for you. Import from `yggdrasil.app`.
 
 ```python
-from yggdrasil.app import (
+from yggdrasil_lm.app import (
     GraphApp,
     create_agent,
     create_tool,
@@ -211,7 +211,7 @@ class GraphApp:
 
 ```python
 import asyncio
-from yggdrasil.app import GraphApp
+from yggdrasil_lm.app import GraphApp
 
 async def main():
     app = GraphApp()
@@ -356,7 +356,7 @@ from yggdrasil import (
 # ── Submodule imports ────────────────────────────────────────────────────────
 
 # Niche / advanced node types
-from yggdrasil.core.nodes import (
+from yggdrasil_lm.core.nodes import (
     Node, NodeType,
     PromptNode, SchemaNode,
     ConstraintRule, DecisionRule, DecisionTable,
@@ -364,29 +364,29 @@ from yggdrasil.core.nodes import (
 )
 
 # Internal runtime helpers
-from yggdrasil.core.executor import (
+from yggdrasil_lm.core.executor import (
     WorkflowPause, WorkflowState,
     cleanup_session, get_runtime_nodes,
 )
 
 # LLM backends
-from yggdrasil.backends.llm import LLMBackend, ToolCall, ToolResult, LLMResponse
+from yggdrasil_lm.backends.llm import LLMBackend, ToolCall, ToolResult, LLMResponse
 
 # Batch (legacy direct construction)
-from yggdrasil.batch import BatchExecutor
+from yggdrasil_lm.batch import BatchExecutor
 
 # Semantic retrieval
-from yggdrasil.retrieval.embedder import Embedder
-from yggdrasil.retrieval.wrrf import semantic_search, RetrievalResult
+from yggdrasil_lm.retrieval.embedder import Embedder
+from yggdrasil_lm.retrieval.wrrf import semantic_search, RetrievalResult
 
 # Tool registry
-from yggdrasil.tools.registry import ToolRegistry, default_registry
+from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 
 # Claude Code sub-agent backend (requires pip install 'yggdrasil[claude-code]')
-from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 
 # OpenTelemetry exporter (requires pip install 'yggdrasil[observe]')
-from yggdrasil.exporters.otel import export_trace
+from yggdrasil_lm.exporters.otel import export_trace
 ```
 
 ---
@@ -399,7 +399,7 @@ All nodes are immutable [Pydantic v2](https://docs.pydantic.dev/) models. Every 
 
 ### NodeType
 
-> Import: `from yggdrasil.core.nodes import NodeType`
+> Import: `from yggdrasil_lm.core.nodes import NodeType`
 
 ```python
 class NodeType(StrEnum):
@@ -418,7 +418,7 @@ class NodeType(StrEnum):
 
 ### Node (base)
 
-> Import: `from yggdrasil.core.nodes import Node`
+> Import: `from yggdrasil_lm.core.nodes import Node`
 
 ```python
 class Node(BaseModel):
@@ -448,7 +448,7 @@ class Node(BaseModel):
 **Tutorial — creating and expiring a base node**
 
 ```python
-from yggdrasil.core.nodes import Node
+from yggdrasil_lm.core.nodes import Node
 
 node = Node(name="scratch", description="temporary")
 print(node.node_id)    # auto UUID
@@ -709,7 +709,7 @@ print(policy.is_valid)        # True (not expired in graph)
 
 ### PromptNode
 
-> Import: `from yggdrasil.core.nodes import PromptNode`
+> Import: `from yggdrasil_lm.core.nodes import PromptNode`
 
 A reusable Jinja2 template stored as a graph node. Storing prompts in the graph allows versioning, semantic search, sharing across agents, and runtime swapping without code changes.
 
@@ -729,7 +729,7 @@ class PromptNode(Node):
 **Tutorial**
 
 ```python
-from yggdrasil.core.nodes import PromptNode
+from yggdrasil_lm.core.nodes import PromptNode
 
 prompt = PromptNode(
     name="ResearcherPrompt",
@@ -746,7 +746,7 @@ print(text)
 
 ### SchemaNode
 
-> Import: `from yggdrasil.core.nodes import SchemaNode`
+> Import: `from yggdrasil_lm.core.nodes import SchemaNode`
 
 Stores a JSON Schema contract as a first-class graph citizen. Connected to `ToolNode` or `ContextNode` via `VALIDATES` edges. Passive — the executor never visits it directly.
 
@@ -759,7 +759,7 @@ class SchemaNode(Node):
 **Tutorial**
 
 ```python
-from yggdrasil.core.nodes import SchemaNode
+from yggdrasil_lm.core.nodes import SchemaNode
 from yggdrasil import Edge, EdgeType
 
 schema = SchemaNode(
@@ -847,7 +847,7 @@ def node_from_dict(data: dict[str, Any]) -> AnyNode
 Deserializes a plain dict (e.g. from JSON) into the correct typed subclass, keyed on the `"node_type"` field.
 
 ```python
-from yggdrasil.core.nodes import node_from_dict
+from yggdrasil_lm.core.nodes import node_from_dict
 
 data = {"node_type": "agent", "name": "Bot", "model": "claude-sonnet-4-6"}
 node = node_from_dict(data)
@@ -1028,7 +1028,7 @@ class GraphStore(ABC):
 
 ```python
 from yggdrasil import NetworkXGraphStore, EdgeType
-from yggdrasil.core.nodes import NodeType
+from yggdrasil_lm.core.nodes import NodeType
 
 store = NetworkXGraphStore()
 
@@ -1193,7 +1193,7 @@ class ApprovalTask:
 
 ### ContextSelection
 
-> Import: `from yggdrasil.core.executor import ContextSelection`
+> Import: `from yggdrasil_lm.core.executor import ContextSelection`
 
 One explainable context choice produced by `ContextNavigator`.
 
@@ -1213,7 +1213,7 @@ class ContextSelection:
 
 ### ContextNavigator
 
-> Import: `from yggdrasil.core.executor import ContextNavigator`
+> Import: `from yggdrasil_lm.core.executor import ContextNavigator`
 
 Graph-native context retrieval with seed, expansion, reranking, and token packing.
 
@@ -1486,7 +1486,7 @@ inspect_trace(ctx, file="trace.txt", format="text")
 
 ### get_runtime_nodes
 
-> Import: `from yggdrasil.core.executor import get_runtime_nodes`
+> Import: `from yggdrasil_lm.core.executor import get_runtime_nodes`
 
 ```python
 async def get_runtime_nodes(
@@ -1527,7 +1527,7 @@ The node also has `group_id = ctx.session_id`, enabling fast `list_nodes(group_i
 **Tutorial**
 
 ```python
-from yggdrasil.core.executor import get_runtime_nodes
+from yggdrasil_lm.core.executor import get_runtime_nodes
 
 ctx = await executor.run(agent.node_id, "query")
 
@@ -1553,7 +1553,7 @@ predefined    = await store.list_nodes(group_id="default")
 
 ### cleanup_session
 
-> Import: `from yggdrasil.core.executor import cleanup_session`
+> Import: `from yggdrasil_lm.core.executor import cleanup_session`
 
 ```python
 async def cleanup_session(
@@ -1578,7 +1578,7 @@ Expires or hard-deletes all runtime nodes from `session_id` and their inbound `P
 **Tutorial**
 
 ```python
-from yggdrasil.core.executor import cleanup_session
+from yggdrasil_lm.core.executor import cleanup_session
 
 ctx = await executor.run(agent.node_id, "query")
 
@@ -1637,7 +1637,7 @@ print(decision.low_confidence_warning) # None — confidence is high
 
 ### AgentResult
 
-> Import: `from yggdrasil.core.executor import AgentResult`
+> Import: `from yggdrasil_lm.core.executor import AgentResult`
 
 Structured execution envelope returned by `GraphExecutor.execute()`. Bundles the agent output with the routing metadata so every dispatch decision is auditable.
 
@@ -1672,7 +1672,7 @@ result = await executor.execute("rules-editor", query)
 
 ### ComposedAgent
 
-> Import: `from yggdrasil.core.executor import ComposedAgent`
+> Import: `from yggdrasil_lm.core.executor import ComposedAgent`
 
 The fully resolved runtime configuration for one agent invocation. Returned by `AgentComposer.compose()`.
 
@@ -1701,8 +1701,8 @@ class ComposedAgent:
 **Tutorial**
 
 ```python
-from yggdrasil.core.executor import AgentComposer
-from yggdrasil.retrieval.embedder import Embedder
+from yggdrasil_lm.core.executor import AgentComposer
+from yggdrasil_lm.retrieval.embedder import Embedder
 
 composer = AgentComposer(store, embedder=Embedder())
 composed = await composer.compose(agent_node, query="search for Python docs")
@@ -1719,7 +1719,7 @@ schemas = composed.build_tool_schemas()
 
 ### AgentComposer
 
-> Import: `from yggdrasil.core.executor import AgentComposer`
+> Import: `from yggdrasil_lm.core.executor import AgentComposer`
 
 Discovers an agent's tools, context, prompt, and delegates by traversing the graph at runtime.
 
@@ -1893,7 +1893,7 @@ class GraphExecutor:
 
 ```python
 from yggdrasil import NetworkXGraphStore, GraphExecutor
-from yggdrasil.tools.registry import default_registry
+from yggdrasil_lm.tools.registry import default_registry
 
 store = NetworkXGraphStore()
 # ... build your graph ...
@@ -1975,7 +1975,7 @@ Backends abstract LLM provider differences. `GraphExecutor` accepts any `LLMBack
 
 ### LLMBackend (ABC)
 
-> Import: `from yggdrasil.backends.llm import LLMBackend`
+> Import: `from yggdrasil_lm.backends.llm import LLMBackend`
 
 ```python
 class LLMBackend(ABC):
@@ -2236,7 +2236,7 @@ print(run.reduced_output)   # combined summary
 Checkpoint nodes persist state across process restarts. Use `BatchExecutor.resume()` directly:
 
 ```python
-from yggdrasil.batch import BatchExecutor
+from yggdrasil_lm.batch import BatchExecutor
 
 batch = BatchExecutor(store, executor, concurrency=5)
 run = await batch.resume(run_id, documents, query_fn=lambda d: f"Summarise: {d['title']}")
@@ -2254,7 +2254,7 @@ Checkpoint nodes are `ContextNode` objects with `content_type="batch_run"` / `"b
 > `BatchExecutor` directly emits a `DeprecationWarning`.
 
 ```python
-from yggdrasil.batch import BatchExecutor
+from yggdrasil_lm.batch import BatchExecutor
 
 batch = BatchExecutor(store, executor, concurrency=5)
 run   = await batch.run(agent.node_id, items, query_fn=lambda x: x)
@@ -2310,8 +2310,8 @@ class Embedder:
 **Tutorial**
 
 ```python
-from yggdrasil.retrieval.embedder import Embedder
-from yggdrasil.core.nodes import NodeType
+from yggdrasil_lm.retrieval.embedder import Embedder
+from yggdrasil_lm.core.nodes import NodeType
 
 embedder = Embedder()
 
@@ -2417,10 +2417,10 @@ final_score = tool_score + agent_score + tag_bonus
 **Tutorial**
 
 ```python
-from yggdrasil.retrieval.embedder import Embedder
-from yggdrasil.retrieval.wrrf import semantic_search
+from yggdrasil_lm.retrieval.embedder import Embedder
+from yggdrasil_lm.retrieval.wrrf import semantic_search
 from yggdrasil import GraphExecutor
-from yggdrasil.core.nodes import NodeType
+from yggdrasil_lm.core.nodes import NodeType
 
 embedder = Embedder()
 
@@ -2491,7 +2491,7 @@ class ToolRegistry:
 **Tutorial**
 
 ```python
-from yggdrasil.tools.registry import ToolRegistry, default_registry
+from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 from yggdrasil import GraphExecutor, ToolNode
 
 # Option 1: decorator on default_registry
@@ -2527,7 +2527,7 @@ The `ToolNode.callable_ref` must exactly match the string used in `registry.regi
 Global singleton `ToolRegistry` instance pre-loaded with the three built-in tools. Attach it to any executor:
 
 ```python
-from yggdrasil.tools.registry import default_registry
+from yggdrasil_lm.tools.registry import default_registry
 
 default_registry.attach(executor)
 ```
@@ -2583,10 +2583,10 @@ Putting it all together: a two-agent research pipeline with semantic entry-point
 ```python
 import asyncio
 from yggdrasil import AgentNode, ToolNode, ContextNode, Edge, NetworkXGraphStore, GraphExecutor
-from yggdrasil.core.nodes import PromptNode, NodeType
-from yggdrasil.retrieval.embedder import Embedder
-from yggdrasil.retrieval.wrrf import semantic_search
-from yggdrasil.tools.registry import default_registry
+from yggdrasil_lm.core.nodes import PromptNode, NodeType
+from yggdrasil_lm.retrieval.embedder import Embedder
+from yggdrasil_lm.retrieval.wrrf import semantic_search
+from yggdrasil_lm.tools.registry import default_registry
 
 async def main():
     store = NetworkXGraphStore()
@@ -2684,7 +2684,7 @@ pip install 'yggdrasil[claude-code]'
 ### ClaudeCodeExecutor
 
 ```python
-from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 
 ClaudeCodeExecutor(
     store:              GraphStore,
@@ -2770,7 +2770,7 @@ _execute_agent()
 ```python
 import asyncio
 from yggdrasil import AgentNode, NetworkXGraphStore
-from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 
 async def main():
     store = NetworkXGraphStore()
@@ -2802,7 +2802,7 @@ asyncio.run(main())
 import asyncio
 import httpx
 from yggdrasil import AgentNode, ToolNode, Edge, NetworkXGraphStore
-from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 
 async def main():
     store = NetworkXGraphStore()
@@ -2868,7 +2868,7 @@ Converts an `ExecutionContext` trace into [OpenTelemetry](https://opentelemetry.
 ### export_trace
 
 ```python
-from yggdrasil.exporters.otel import export_trace
+from yggdrasil_lm.exporters.otel import export_trace
 
 def export_trace(
     ctx:          ExecutionContext,
@@ -2964,7 +2964,7 @@ provider.add_span_processor(BatchSpanProcessor(
 trace.set_tracer_provider(provider)
 
 # 2. Export after every run — same call regardless of backend
-from yggdrasil.exporters.otel import export_trace
+from yggdrasil_lm.exporters.otel import export_trace
 
 ctx = await executor.run(entry.node_id, "analyse the codebase")
 export_trace(ctx)
@@ -3029,7 +3029,7 @@ pip install 'yggdrasil[viz]'
 Post-run entry point. Opens a browser tab showing the full trace after a run completes.
 
 ```python
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.viz import serve_trace
 
 async def serve_trace(
     ctx:          ExecutionContext,
@@ -3058,7 +3058,7 @@ async def serve_trace(
 ```python
 import asyncio
 from yggdrasil import GraphExecutor, NetworkXGraphStore
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.viz import serve_trace
 
 async def main():
     store = NetworkXGraphStore()
@@ -3083,7 +3083,7 @@ asyncio.run(main())
 Async context manager. Starts the visualizer before a run so events stream in real-time.
 
 ```python
-from yggdrasil.viz import live_trace
+from yggdrasil_lm.viz import live_trace
 
 class live_trace:
     def __init__(
@@ -3112,7 +3112,7 @@ class live_trace:
 ```python
 import asyncio
 from yggdrasil import GraphExecutor, NetworkXGraphStore
-from yggdrasil.viz import live_trace
+from yggdrasil_lm.viz import live_trace
 
 async def main():
     executor = GraphExecutor(store)
@@ -3132,7 +3132,7 @@ asyncio.run(main())
 Low-level server class for custom integration. Use `serve_trace()` or `live_trace()` for the common cases.
 
 ```python
-from yggdrasil.viz.server import VizServer
+from yggdrasil_lm.viz.server import VizServer
 
 class VizServer:
     def __init__(self, port: int = 7331, open_browser: bool = True) -> None

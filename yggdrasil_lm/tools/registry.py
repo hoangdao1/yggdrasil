@@ -21,16 +21,16 @@ from __future__ import annotations
 import importlib
 from typing import Any, Callable
 
-from yggdrasil.tools.code_exec import run_python
-from yggdrasil.tools.echo import echo
-from yggdrasil.tools.web_search import search as web_search
+from yggdrasil_lm.tools.code_exec import run_python
+from yggdrasil_lm.tools.echo import echo
+from yggdrasil_lm.tools.web_search import search as web_search
 
 
 class ToolRegistry:
     """Central registry mapping callable_ref strings to Python callables.
 
     callable_ref format: "module.path.function_name"
-    e.g. "yggdrasil.tools.web_search.search"
+    e.g. "tools.web_search.search"
     """
 
     def __init__(self) -> None:
@@ -56,7 +56,7 @@ class ToolRegistry:
     def load(self, callable_ref: str) -> Callable[..., Any]:
         """Load a callable from a dotted import path if not already registered.
 
-        e.g. "yggdrasil.tools.web_search.search" imports
+        e.g. "tools.web_search.search" imports
         yggdrasil.tools.web_search and returns its .search attribute.
         """
         if callable_ref in self._registry:
@@ -94,7 +94,7 @@ default_registry = ToolRegistry()
 # Built-in tool implementations
 # ---------------------------------------------------------------------------
 
-default_registry.register("yggdrasil.tools.web_search.search", web_search)
+default_registry.register("tools.web_search.search", web_search)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ default_registry.register("yggdrasil.tools.web_search.search", web_search)
 # arbitrary OS commands.
 #
 # To opt in explicitly:
-#   from yggdrasil.tools.registry import run_python
-#   executor.register_tool("yggdrasil.tools.code_exec.run_python", run_python)
+#   from yggdrasil_lm.tools.registry import run_python
+#   executor.register_tool("tools.code_exec.run_python", run_python)
 # ---------------------------------------------------------------------------
-default_registry.register("yggdrasil.tools.echo.echo", echo)
+default_registry.register("tools.echo.echo", echo)

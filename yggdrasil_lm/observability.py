@@ -9,15 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from yggdrasil.core.executor import (
+from yggdrasil_lm.core.executor import (
     ExecutionContext,
     TraceEvent,
     cleanup_session,
     get_runtime_nodes,
     print_trace,
 )
-from yggdrasil.exporters.otel import export_trace
-from yggdrasil.trace_ui import inspect_trace
+from yggdrasil_lm.exporters.otel import export_trace
+from yggdrasil_lm.trace_ui import inspect_trace
 
 
 @dataclass

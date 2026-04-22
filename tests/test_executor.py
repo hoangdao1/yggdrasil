@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from yggdrasil.backends.llm import LLMBackend, LLMResponse, ToolCall
-from yggdrasil.core.edges import Edge, EdgeType
-from yggdrasil.core.executor import AgentComposer, ContextNavigator, ExecutionContext, GraphExecutor
-from yggdrasil.core.nodes import (
+from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall
+from yggdrasil_lm.core.edges import Edge, EdgeType
+from yggdrasil_lm.core.executor import AgentComposer, ContextNavigator, ExecutionContext, GraphExecutor
+from yggdrasil_lm.core.nodes import (
     AgentNode,
     ApprovalNode,
     ConstraintRule,
@@ -29,9 +29,9 @@ from yggdrasil.core.nodes import (
     SchemaNode,
     ToolNode,
 )
-from yggdrasil.core.store import NetworkXGraphStore
-from yggdrasil.core.executor import TraceEvent, WorkflowState
-from yggdrasil.observability import explain_run
+from yggdrasil_lm.core.store import NetworkXGraphStore
+from yggdrasil_lm.core.executor import TraceEvent, WorkflowState
+from yggdrasil_lm.observability import explain_run
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +564,7 @@ async def test_approval_node_creates_inbox_task_and_routes_on_resume(store):
 
 def test_end_node_constant():
     """END_NODE equals '__END__' and works as a routing_table value."""
-    from yggdrasil import END_NODE
+    from yggdrasil_lm import END_NODE
 
     assert END_NODE == "__END__"
 
@@ -600,7 +600,7 @@ def test_embedder_import_error_message(monkeypatch):
 
     # Remove the cached module so we re-execute the import guard
     for mod_name in list(sys.modules):
-        if "yggdrasil.retrieval.embedder" in mod_name:
+        if "retrieval.embedder" in mod_name:
             del sys.modules[mod_name]
 
     # Simulate sentence_transformers not being installed
@@ -609,14 +609,14 @@ def test_embedder_import_error_message(monkeypatch):
 
     try:
         with pytest.raises(ImportError, match="yggdrasil\\[embeddings\\]"):
-            import yggdrasil.retrieval.embedder  # noqa: F401
+            import yggdrasil_lm.retrieval.embedder  # noqa: F401
     finally:
         # Restore original state
         if original is None:
             sys.modules.pop("sentence_transformers", None)
         else:
             sys.modules["sentence_transformers"] = original
-        sys.modules.pop("yggdrasil.retrieval.embedder", None)
+        sys.modules.pop("retrieval.embedder", None)
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +647,7 @@ async def test_explain_run_pause_fields(store):
 
 def test_explain_run_paused_true_but_no_pause_event():
     """explain_run.paused is True even when ctx.is_paused() but no pause event in trace."""
-    from yggdrasil.core.executor import WorkflowPause
+    from yggdrasil_lm.core.executor import WorkflowPause
     ctx = ExecutionContext(query="test", session_id="sess-p")
     ctx.state.status = "paused"
     ctx.state.pending_pause = WorkflowPause(

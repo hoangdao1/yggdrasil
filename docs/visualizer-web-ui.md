@@ -32,7 +32,7 @@ pip install "yggdrasil[viz] @ git+https://github.com/hoangdao1/yggdrasil.git"
 Use `serve_trace(...)` after a run has completed:
 
 ```python
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.viz import serve_trace
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="hello")
 await serve_trace(ctx, store=executor.store)
@@ -57,7 +57,7 @@ Useful options:
 Use `live_trace(...)` when you want events to appear as execution progresses:
 
 ```python
-from yggdrasil.viz import live_trace
+from yggdrasil_lm.viz import live_trace
 
 async with live_trace(executor, port=7331, wait=False) as viz:
     ctx = await executor.run(entry_node_id=agent.node_id, query="hello")

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from yggdrasil.backends.llm import LLMBackend, LLMResponse, ToolCall
+from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall
 
 
 def end_turn(text: str) -> LLMResponse:

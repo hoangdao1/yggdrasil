@@ -21,8 +21,8 @@ except ImportError as _e:
         "Install it with: pip install 'yggdrasil[embeddings]'"
     ) from _e
 
-from yggdrasil.core.nodes import AnyNode, NodeType
-from yggdrasil.core.store import GraphStore
+from yggdrasil_lm.core.nodes import AnyNode, NodeType
+from yggdrasil_lm.core.store import GraphStore
 
 
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
@@ -46,7 +46,7 @@ class Embedder:
 
     def _node_text(self, node: AnyNode) -> str:
         """Produce the text to embed for a given node."""
-        from yggdrasil.core.nodes import ContextNode, ToolNode
+        from yggdrasil_lm.core.nodes import ContextNode, ToolNode
         parts = []
         if node.name:
             parts.append(node.name)

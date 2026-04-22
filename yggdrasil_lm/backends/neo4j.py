@@ -20,9 +20,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from yggdrasil.core.edges import Edge, EdgeType
-from yggdrasil.core.nodes import AnyNode, Node, NodeType, node_from_dict
-from yggdrasil.core.store import GraphStore
+from yggdrasil_lm.core.edges import Edge, EdgeType
+from yggdrasil_lm.core.nodes import AnyNode, Node, NodeType, node_from_dict
+from yggdrasil_lm.core.store import GraphStore
 
 
 class Neo4jGraphStore(GraphStore):

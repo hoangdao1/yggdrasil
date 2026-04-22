@@ -4,8 +4,8 @@ This is the canonical home for functions that render a trace to a terminal.
 They have side effects (print to stdout) and return None.
 
 Canonical imports:
-    from yggdrasil.trace_ui import inspect_trace  # Rich tree UI
-    from yggdrasil.trace_ui import print_trace    # plain-text fallback
+    from yggdrasil_lm.trace_ui import inspect_trace  # Rich tree UI
+    from yggdrasil_lm.trace_ui import print_trace    # plain-text fallback
 
 Functions:
     inspect_trace() — Rich terminal tree with full detail: agent configs,
@@ -20,7 +20,7 @@ Layers:
     yggdrasil.viz            — browser UI: serve_trace, live_trace
 
 Usage:
-    from yggdrasil.trace_ui import inspect_trace
+    from yggdrasil_lm.trace_ui import inspect_trace
 
     ctx = await executor.run(entry_node_id, query)
     inspect_trace(ctx)
@@ -33,7 +33,7 @@ Usage:
     inspect_trace(ctx, file="trace.txt",  format="text")
 
     # CI / plain-text fallback
-    from yggdrasil.trace_ui import print_trace
+    from yggdrasil_lm.trace_ui import print_trace
     print_trace(ctx)
 """
 
@@ -43,7 +43,7 @@ import json
 import sys
 from typing import IO, Any, Literal
 
-from yggdrasil.core.executor import ExecutionContext, TraceEvent, print_trace  # noqa: F401
+from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, print_trace  # noqa: F401
 
 __all__ = ["inspect_trace", "print_trace"]
 

@@ -2,10 +2,10 @@
 
 import pytest
 
-from yggdrasil.core.edges import Edge
-from yggdrasil.core.nodes import AgentNode, ToolNode
-from yggdrasil.core.store import NetworkXGraphStore
-from yggdrasil.retrieval.wrrf import semantic_search
+from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.nodes import AgentNode, ToolNode
+from yggdrasil_lm.core.store import NetworkXGraphStore
+from yggdrasil_lm.retrieval.wrrf import semantic_search
 
 
 def _vec(seed: float, dim: int = 8) -> list[float]:
@@ -36,14 +36,14 @@ async def _build_retrieval_graph(store: NetworkXGraphStore):
     tool_a = ToolNode(
         name="run_python",
         description="Execute Python code snippets",
-        callable_ref="yggdrasil.tools.code_exec.run_python",
+        callable_ref="tools.code_exec.run_python",
         embedding=_vec(1.1),   # close to agent_a
         input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
     )
     tool_b = ToolNode(
         name="web_search",
         description="Search the web for current information",
-        callable_ref="yggdrasil.tools.web_search.search",
+        callable_ref="tools.web_search.search",
         embedding=_vec(2.1),   # close to agent_b
         input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
     )
@@ -250,7 +250,7 @@ async def test_tool_node_tags_field():
     """ToolNode stores tags without error."""
     tool = ToolNode(
         name="run_python",
-        callable_ref="yggdrasil.tools.code_exec.run_python",
+        callable_ref="tools.code_exec.run_python",
         input_schema={},
         tags=["code_execution", "python"],
     )

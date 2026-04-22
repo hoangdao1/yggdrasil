@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "yggdrasil"
-version = "0.1.0"
+name = "yggdrasil-lm"
+version = "0.1.1"
 description = "Yggdrasil: a Python framework for graph-native agent orchestration"
 readme = "README.md"
 license = { text = "MIT" }
@@ -43,8 +43,8 @@ observe     = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 viz         = ["fastapi>=0.100", "uvicorn>=0.24", "websockets>=11.0"]
 
 [project.scripts]
-yggdrasil-config = "yggdrasil.config.cli:main"
-yggdrasil = "yggdrasil.graphadmin.cli:main"
+yggdrasil-config = "yggdrasil_lm.config.cli:main"
+yggdrasil = "yggdrasil_lm.graphadmin.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/hoangdao1/yggdrasil"
@@ -53,11 +53,11 @@ Issues = "https://github.com/hoangdao1/yggdrasil/issues"
 Documentation = "https://github.com/hoangdao1/yggdrasil#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["yggdrasil"]
+packages = ["yggdrasil_lm"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/yggdrasil",
+    "/yggdrasil_lm",
     "/README.md",
     "/API_REFERENCE.md",
     "/pyproject.toml",

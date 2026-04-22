@@ -38,7 +38,7 @@ Quick start
     trace.set_tracer_provider(provider)
 
     # 2. Export after every run
-    from yggdrasil.exporters.otel import export_trace
+    from yggdrasil_lm.exporters.otel import export_trace
 
     ctx = await executor.run(entry_node_id, query)
     export_trace(ctx)          # sends spans to the configured backend
@@ -54,7 +54,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from yggdrasil.core.executor import ExecutionContext, TraceEvent
+    from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _SERVICE_NAME    = "yggdrasil"
-_INSTRUMENTATION = "yggdrasil.exporters.otel"
+_INSTRUMENTATION = "exporters.otel"
 _SCHEMA_URL      = "https://opentelemetry.io/schemas/1.26.0"
 
 
@@ -184,11 +184,11 @@ def _export_hop(
     start_ns, end_ns = _hop_times(hop, hop_children)
 
     hop_attrs: dict[str, Any] = {
-        "yggdrasil.hop":        hop_num,
-        "yggdrasil.node_type":  p.get("node_type", ""),
-        "yggdrasil.node_name":  hop.node_name,
-        "yggdrasil.session_id": hop.session_id,
-        "yggdrasil.query":      query,
+        "hop":        hop_num,
+        "node_type":  p.get("node_type", ""),
+        "node_name":  hop.node_name,
+        "session_id": hop.session_id,
+        "query":      query,
     }
 
     span_ctx = SpanContext(
@@ -205,7 +205,7 @@ def _export_hop(
         start_time=start_ns,
         attributes=hop_attrs,
     ) as hop_span:
-        hop_span.set_attribute("yggdrasil.summary", p.get("summary", "")[:500])
+        hop_span.set_attribute("summary", p.get("summary", "")[:500])
 
         for child in hop_children:
             if child.event_type == "agent_start":
@@ -240,11 +240,11 @@ def _export_agent(
     end_ns   = _to_ns(end_event.timestamp) if end_event else start_ns + 1_000_000
 
     agent_attrs: dict[str, Any] = {
-        "yggdrasil.agent.name":       agent_name,
-        "yggdrasil.agent.model":      model,
-        "yggdrasil.agent.tools":      json.dumps(p.get("tools", [])),
-        "yggdrasil.agent.context":    json.dumps(p.get("context", [])),
-        "yggdrasil.agent.query":      p.get("query", "")[:500],
+        "agent.name":       agent_name,
+        "agent.model":      model,
+        "agent.tools":      json.dumps(p.get("tools", [])),
+        "agent.context":    json.dumps(p.get("context", [])),
+        "agent.query":      p.get("query", "")[:500],
         "llm.system":                   "anthropic",
         "llm.request.model":            model,
         "gen_ai.system":                "anthropic",
@@ -252,9 +252,9 @@ def _export_agent(
     }
 
     if end_event:
-        agent_attrs["yggdrasil.agent.intent"]     = end_event.payload.get("intent", "")
-        agent_attrs["yggdrasil.agent.iterations"] = end_event.payload.get("iterations", 1)
-        agent_attrs["yggdrasil.agent.summary"]    = end_event.payload.get("text_summary", "")[:500]
+        agent_attrs["agent.intent"]     = end_event.payload.get("intent", "")
+        agent_attrs["agent.iterations"] = end_event.payload.get("iterations", 1)
+        agent_attrs["agent.summary"]    = end_event.payload.get("text_summary", "")[:500]
 
     with tracer.start_as_current_span(
         f"agent: {agent_name}",
@@ -317,17 +317,17 @@ def _export_tool(
     end_ns   = _to_ns(result_ev.timestamp) if result_ev else start_ns + 1_000_000
 
     tool_attrs: dict[str, Any] = {
-        "yggdrasil.tool.name":         tool_name,
-        "yggdrasil.tool.callable_ref": p.get("callable_ref", ""),
-        "yggdrasil.tool.input":        json.dumps(inp)[:1000],
+        "tool.name":         tool_name,
+        "tool.callable_ref": p.get("callable_ref", ""),
+        "tool.input":        json.dumps(inp)[:1000],
     }
 
     success = True
     if result_ev:
         rp = result_ev.payload
         success = rp.get("success", True)
-        tool_attrs["yggdrasil.tool.output_summary"] = rp.get("output_summary", "")[:500]
-        tool_attrs["yggdrasil.tool.success"]        = success
+        tool_attrs["tool.output_summary"] = rp.get("output_summary", "")[:500]
+        tool_attrs["tool.success"]        = success
 
     with tracer.start_as_current_span(
         f"tool: {tool_name}",

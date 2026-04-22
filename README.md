@@ -104,7 +104,7 @@ pip install -e ".[dev]"          # tests + rich trace UI
 
 ```python
 import asyncio
-from yggdrasil.app import GraphApp
+from yggdrasil_lm.app import GraphApp
 
 
 async def main() -> None:
@@ -121,7 +121,7 @@ Need tools? Attach the built-ins and go:
 
 ```python
 import asyncio
-from yggdrasil.app import GraphApp
+from yggdrasil_lm.app import GraphApp
 
 
 async def main() -> None:
