@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from yggdrasil import Edge, GraphExecutor, NetworkXGraphStore, create_agent
+from yggdrasil_lm import Edge, GraphExecutor, NetworkXGraphStore, create_agent
 
 from examples._stub_backend import RuleBasedBackend, SmartReply
 

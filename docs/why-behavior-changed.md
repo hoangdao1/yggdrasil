@@ -13,7 +13,7 @@ Use this workflow when a team asks:
 Use `explain_run(ctx)` to get a structured summary of why a specific run behaved the way it did. It returns a typed `RunExplanation` — no terminal output, no server.
 
 ```python
-from yggdrasil.observability import explain_run
+from yggdrasil_lm.observability import explain_run
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="...")
 summary = explain_run(ctx)
@@ -38,7 +38,7 @@ Once you have the `ctx`, choose how to view the full event-by-event trace:
 **Terminal (Rich tree UI):**
 
 ```python
-from yggdrasil.trace_ui import inspect_trace
+from yggdrasil_lm.trace_ui import inspect_trace
 
 inspect_trace(ctx)
 
@@ -50,7 +50,7 @@ inspect_trace(ctx, file="trace.txt", format="text")
 **Browser (interactive, with graph store snapshot):**
 
 ```python
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.viz import serve_trace
 
 await serve_trace(ctx, store=executor.store)
 ```
@@ -58,7 +58,7 @@ await serve_trace(ctx, store=executor.store)
 **Browser (live streaming during the run):**
 
 ```python
-from yggdrasil.viz import live_trace
+from yggdrasil_lm.viz import live_trace
 
 async with live_trace(executor) as viz:
     ctx = await executor.run(entry_node_id=agent.node_id, query="...")

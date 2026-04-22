@@ -24,7 +24,7 @@ It adds:
 
 ```python
 from yggdrasil import NetworkXGraphStore, create_executor
-from yggdrasil.batch import BatchExecutor
+from yggdrasil_lm.batch import BatchExecutor
 
 
 async def run_batch(agent, documents) -> None:

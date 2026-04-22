@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from yggdrasil.core.executor import ExecutionContext, TraceEvent
+from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ def _hop_event(hop_num: int, node_name: str = "Agent", *, node_id: str = "node-1
 def _capture(events: list[TraceEvent], *, verbose: bool = True) -> str:
     """Render events to a string via Console(record=True)."""
     from rich.console import Console
-    from yggdrasil.trace_ui import _render_session
+    from yggdrasil_lm.trace_ui import _render_session
 
     console = Console(record=True, no_color=True, width=120)
     session_id = events[0].session_id if events else "unknown"
@@ -234,14 +234,14 @@ def test_subgraph_enter_exit_rendered():
 
 def test_raw_event_list_input():
     """inspect_trace accepts list[TraceEvent] directly, not only ExecutionContext."""
-    from yggdrasil.trace_ui import inspect_trace
+    from yggdrasil_lm.trace_ui import inspect_trace
     from rich.console import Console
     import io
 
     events = [_hop_event(1)]
     # Should not raise even when passed a raw list
     buf = io.StringIO()
-    with patch("yggdrasil.trace_ui.Console", return_value=Console(file=buf, record=True, no_color=True, width=120)):
+    with patch("trace_ui.Console", return_value=Console(file=buf, record=True, no_color=True, width=120)):
         inspect_trace(events)
     # No exception = pass
 
@@ -251,7 +251,7 @@ def test_raw_event_list_input():
 # ---------------------------------------------------------------------------
 
 def test_html_export_creates_file(tmp_path):
-    from yggdrasil.trace_ui import inspect_trace
+    from yggdrasil_lm.trace_ui import inspect_trace
 
     events = [_hop_event(1)]
     out_file = tmp_path / "trace.html"
@@ -263,7 +263,7 @@ def test_html_export_creates_file(tmp_path):
 
 
 def test_text_export_creates_file(tmp_path):
-    from yggdrasil.trace_ui import inspect_trace
+    from yggdrasil_lm.trace_ui import inspect_trace
 
     events = [_hop_event(1)]
     out_file = tmp_path / "trace.txt"
@@ -276,12 +276,12 @@ def test_text_export_creates_file(tmp_path):
 
 def test_file_handle_is_closed_even_if_render_raises(tmp_path):
     """File handle must not leak when _render_session raises mid-render."""
-    from yggdrasil.trace_ui import inspect_trace
+    from yggdrasil_lm.trace_ui import inspect_trace
 
     out_file = tmp_path / "trace.html"
     events = [_hop_event(1)]
 
-    with patch("yggdrasil.trace_ui._render_session", side_effect=RuntimeError("boom")):
+    with patch("trace_ui._render_session", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
             inspect_trace(events, file=str(out_file), format="html")
 
@@ -298,13 +298,13 @@ def test_file_handle_is_closed_even_if_render_raises(tmp_path):
 
 def test_fallback_without_rich(capsys):
     """When _RICH is False, inspect_trace falls back to print_trace."""
-    from yggdrasil.core.executor import ExecutionContext
-    import yggdrasil.trace_ui as trace_ui_mod
+    from yggdrasil_lm.core.executor import ExecutionContext
+    import yggdrasil_lm.trace_ui as trace_ui_mod
 
     ctx = ExecutionContext(query="test", session_id="sess-fallback")
     ctx.trace = [_event("hop", session_id="sess-fallback", payload={"hop": 1, "summary": "fallback test"})]
 
     with patch.object(trace_ui_mod, "_RICH", False):
-        with patch("yggdrasil.trace_ui.print_trace") as mock_print:
+        with patch("trace_ui.print_trace") as mock_print:
             trace_ui_mod.inspect_trace(ctx)
             mock_print.assert_called_once_with(ctx)

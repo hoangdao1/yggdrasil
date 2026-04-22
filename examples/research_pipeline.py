@@ -28,10 +28,10 @@ from __future__ import annotations
 import asyncio
 import os
 
-from yggdrasil import AgentNode, ContextNode, Edge, GraphExecutor, NetworkXGraphStore, ToolNode
-from yggdrasil.core.executor import AgentComposer
-from yggdrasil.core.nodes import PromptNode
-from yggdrasil.tools.registry import default_registry
+from yggdrasil_lm import AgentNode, ContextNode, Edge, GraphExecutor, NetworkXGraphStore, ToolNode
+from yggdrasil_lm.core.executor import AgentComposer
+from yggdrasil_lm.core.nodes import PromptNode
+from yggdrasil_lm.tools.registry import default_registry
 
 
 async def build_graph(store: NetworkXGraphStore) -> str:
@@ -82,7 +82,7 @@ async def build_graph(store: NetworkXGraphStore) -> str:
             "Search the web for current information on any topic. "
             "Returns titles and snippets from the top results."
         ),
-        callable_ref="yggdrasil.tools.web_search.search",
+        callable_ref="tools.web_search.search",
         input_schema={
             "type": "object",
             "properties": {

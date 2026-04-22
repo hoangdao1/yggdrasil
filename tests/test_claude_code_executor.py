@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from yggdrasil import (
+from yggdrasil_lm import (
     AgentNode,
     ContextNode,
     Edge,
     NetworkXGraphStore,
     ToolNode,
 )
-from yggdrasil.backends.claude_code import (
+from yggdrasil_lm.backends.claude_code import (
     ClaudeCodeExecutor,
     _AgentRunResult,
     _build_mcp_server,
@@ -49,7 +49,7 @@ def tool_node():
     return ToolNode(
         name="echo",
         description="Echo the input",
-        callable_ref="yggdrasil.tools.echo.echo",
+        callable_ref="tools.echo.echo",
         input_schema={
             "type": "object",
             "properties": {"message": {"type": "string"}},
@@ -97,14 +97,14 @@ class _FakeComposed:
 
 def test_build_mcp_server_returns_none_when_no_tools_registered():
     composed = _FakeComposed(tools=[])
-    with patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True):
+    with patch("backends.claude_code._SDK_AVAILABLE", True):
         assert _build_mcp_server(composed, {}) is None
 
 
 def test_build_mcp_server_returns_none_when_callable_not_registered(tool_node):
     composed = _FakeComposed(tools=[tool_node])
     # tool_fns dict is empty — callable_ref not registered
-    with patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True):
+    with patch("backends.claude_code._SDK_AVAILABLE", True):
         assert _build_mcp_server(composed, {}) is None
 
 
@@ -118,9 +118,9 @@ def test_build_mcp_server_creates_server_when_tool_registered(tool_node):
     fake_decorated = MagicMock()
 
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code.cc_tool", autospec=False) as mock_tool,
-        patch("yggdrasil.backends.claude_code.create_sdk_mcp_server", return_value=fake_server) as mock_create,
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code.cc_tool", autospec=False) as mock_tool,
+        patch("backends.claude_code.create_sdk_mcp_server", return_value=fake_server) as mock_create,
     ):
         # @cc_tool(name, desc, params) returns a decorator; decorator(fn) returns decorated fn
         mock_tool.return_value = lambda fn: fake_decorated
@@ -148,9 +148,9 @@ def test_build_mcp_server_fallback_param_for_empty_schema():
 
     fake_server = MagicMock()
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code.cc_tool", autospec=False) as mock_tool,
-        patch("yggdrasil.backends.claude_code.create_sdk_mcp_server", return_value=fake_server),
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code.cc_tool", autospec=False) as mock_tool,
+        patch("backends.claude_code.create_sdk_mcp_server", return_value=fake_server),
     ):
         mock_tool.return_value = lambda fn: MagicMock()
         _build_mcp_server(composed, {"my.tool": AsyncMock()})
@@ -211,12 +211,12 @@ async def test_execute_agent_query_path(store, agent):
         yield fake_result
 
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code.ClaudeCodeExecutor._run_with_query",
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code.ClaudeCodeExecutor._run_with_query",
               new_callable=AsyncMock,
               return_value=_AgentRunResult(text="Hello from Claude Code", tool_calls=0, cost_usd=None)) as mock_q,
-        patch("yggdrasil.backends.claude_code._build_mcp_server", return_value=None),
-        patch("yggdrasil.backends.claude_code.ClaudeAgentOptions", MagicMock()),
+        patch("backends.claude_code._build_mcp_server", return_value=None),
+        patch("backends.claude_code.ClaudeAgentOptions", MagicMock()),
     ):
         ex = ClaudeCodeExecutor(store)
         ctx = await ex.run(agent.node_id, "say hello")
@@ -242,11 +242,11 @@ async def test_execute_agent_sdk_client_path(store, agent, tool_node):
     fake_server = MagicMock()
 
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code._build_mcp_server", return_value=fake_server),
-        patch("yggdrasil.backends.claude_code.ClaudeAgentOptions", MagicMock()),
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code._build_mcp_server", return_value=fake_server),
+        patch("backends.claude_code.ClaudeAgentOptions", MagicMock()),
         patch(
-            "yggdrasil.backends.claude_code.ClaudeCodeExecutor._run_with_sdk_client",
+            "backends.claude_code.ClaudeCodeExecutor._run_with_sdk_client",
             new_callable=AsyncMock,
             return_value=_AgentRunResult(text="Tool result via SDK client", tool_calls=0, cost_usd=None),
         ) as mock_sdk,
@@ -274,11 +274,11 @@ async def test_routing_between_agents(store):
     await store.upsert_node(agent_a)
 
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code._build_mcp_server", return_value=None),
-        patch("yggdrasil.backends.claude_code.ClaudeAgentOptions", MagicMock()),
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code._build_mcp_server", return_value=None),
+        patch("backends.claude_code.ClaudeAgentOptions", MagicMock()),
         patch(
-            "yggdrasil.backends.claude_code.ClaudeCodeExecutor._run_with_query",
+            "backends.claude_code.ClaudeCodeExecutor._run_with_query",
             new_callable=AsyncMock,
             return_value=_AgentRunResult(text="I will hand off to the next agent", tool_calls=0, cost_usd=None),
         ),
@@ -308,10 +308,10 @@ async def test_context_injected_into_system_prompt(store, agent, context_node):
         return _AgentRunResult(text="ok", tool_calls=0, cost_usd=None)
 
     with (
-        patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", True),
-        patch("yggdrasil.backends.claude_code._build_mcp_server", return_value=None),
+        patch("backends.claude_code._SDK_AVAILABLE", True),
+        patch("backends.claude_code._build_mcp_server", return_value=None),
         patch(
-            "yggdrasil.backends.claude_code.ClaudeCodeExecutor._run_with_query",
+            "backends.claude_code.ClaudeCodeExecutor._run_with_query",
             side_effect=capture_run,
         ),
     ):
@@ -324,7 +324,7 @@ async def test_context_injected_into_system_prompt(store, agent, context_node):
             obj.system_prompt = kwargs.get("system_prompt", "")
             return obj
 
-        with patch("yggdrasil.backends.claude_code.ClaudeAgentOptions", side_effect=fake_options):
+        with patch("backends.claude_code.ClaudeAgentOptions", side_effect=fake_options):
             ex = ClaudeCodeExecutor(store)
             await ex.run(agent.node_id, "check context")
 
@@ -341,7 +341,7 @@ async def test_context_injected_into_system_prompt(store, agent, context_node):
 async def test_missing_sdk_raises_import_error(store, agent):
     await store.upsert_node(agent)
 
-    with patch("yggdrasil.backends.claude_code._SDK_AVAILABLE", False):
+    with patch("backends.claude_code._SDK_AVAILABLE", False):
         ex = ClaudeCodeExecutor(store)
         with pytest.raises(ImportError, match="claude-agent-sdk"):
             await ex._execute_agent(agent, MagicMock(query="test"))

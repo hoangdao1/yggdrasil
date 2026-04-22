@@ -49,8 +49,8 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Callable
 
-from yggdrasil.core.nodes import ContextNode
-from yggdrasil.core.store import GraphStore
+from yggdrasil_lm.core.nodes import ContextNode
+from yggdrasil_lm.core.store import GraphStore
 
 
 # ---------------------------------------------------------------------------

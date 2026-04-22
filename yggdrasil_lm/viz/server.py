@@ -17,12 +17,12 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from yggdrasil.core.edges import Edge
-from yggdrasil.core.store import GraphStore
-from yggdrasil.observability import explain_run
+from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.store import GraphStore
+from yggdrasil_lm.observability import explain_run
 
 if TYPE_CHECKING:
-    from yggdrasil.core.executor import ExecutionContext, TraceEvent
+    from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
 
 _STATIC_DIR = Path(__file__).parent / "static"

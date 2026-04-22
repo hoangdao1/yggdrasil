@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from yggdrasil import GraphApp, print_trace
+from yggdrasil_lm import GraphApp, print_trace
 
 from examples._stub_backend import SequenceBackend, end_turn, tool_use
 
@@ -29,7 +29,7 @@ async def run_demo() -> None:
     )
     tool = await app.add_tool(
         "echo",
-        callable_ref="yggdrasil.tools.echo.echo",
+        callable_ref="tools.echo.echo",
         description="Echoes input text",
         input_schema={
             "type": "object",

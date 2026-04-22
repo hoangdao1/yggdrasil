@@ -18,11 +18,11 @@ import shutil
 import time
 from typing import Any
 
-from yggdrasil import AgentNode, ContextNode, Edge, NetworkXGraphStore, ToolNode
-from yggdrasil.core.edges import EdgeType
-from yggdrasil.core.executor import AgentComposer, ExecutionContext, GraphExecutor
-from yggdrasil.core.nodes import PromptNode
-from yggdrasil.tools.registry import default_registry
+from yggdrasil_lm import AgentNode, ContextNode, Edge, NetworkXGraphStore, ToolNode
+from yggdrasil_lm.core.edges import EdgeType
+from yggdrasil_lm.core.executor import AgentComposer, ExecutionContext, GraphExecutor
+from yggdrasil_lm.core.nodes import PromptNode
+from yggdrasil_lm.tools.registry import default_registry
 
 from benchmarks.metrics import RunMetrics
 from benchmarks.tasks import BenchmarkTask
@@ -213,7 +213,7 @@ async def run_graph_agent(
 
     # Build executor
     if use_claude_code_backend:
-        from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+        from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 
         # Collect all tools declared across all roles
         all_allowed_tools = list({t for role in task.agent_roles for t in role.tools})

@@ -207,7 +207,7 @@ class ToolNode(Node):
     input_schema:  dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
 
-    # Dotted import path: "yggdrasil.tools.web_search.search"
+    # Dotted import path: "tools.web_search.search"
     callable_ref:  str  = ""
     is_async:      bool = True
 

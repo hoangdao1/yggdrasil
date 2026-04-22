@@ -2,8 +2,8 @@
 
 END_NODE: str = "__END__"
 
-from yggdrasil.batch import BatchItemResult, BatchRun, BatchStatus
-from yggdrasil.app import (
+from yggdrasil_lm.batch import BatchItemResult, BatchRun, BatchStatus
+from yggdrasil_lm.app import (
     GraphApp,
     create_agent,
     create_context,
@@ -11,8 +11,8 @@ from yggdrasil.app import (
     create_prompt,
     create_tool,
 )
-from yggdrasil.backends.llm import AnthropicBackend, OpenAIBackend
-from yggdrasil.core.nodes import (
+from yggdrasil_lm.backends.llm import AnthropicBackend, OpenAIBackend
+from yggdrasil_lm.core.nodes import (
     AgentNode,
     ApprovalNode,
     ContextNode,
@@ -22,17 +22,17 @@ from yggdrasil.core.nodes import (
     RouteRule,
     ToolNode,
 )
-from yggdrasil.core.edges import Edge, EdgeType
-from yggdrasil.core.store import GraphStore, NetworkXGraphStore
-from yggdrasil.core.executor import (
+from yggdrasil_lm.core.edges import Edge, EdgeType
+from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
+from yggdrasil_lm.core.executor import (
     ExecutionContext,
     ExecutionOptions,
     GraphExecutor,
     TraceEvent,
     print_trace,
 )
-from yggdrasil.observability import RunExplanation, explain_run
-from yggdrasil.trace_ui import inspect_trace
+from yggdrasil_lm.observability import RunExplanation, explain_run
+from yggdrasil_lm.trace_ui import inspect_trace
 
 __all__ = [
     "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_tool",

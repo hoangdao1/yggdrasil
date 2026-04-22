@@ -28,9 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from yggdrasil.core.edges import EdgeType
-from yggdrasil.core.nodes import AgentNode, AnyNode, NodeType, ToolNode
-from yggdrasil.core.store import GraphStore
+from yggdrasil_lm.core.edges import EdgeType
+from yggdrasil_lm.core.nodes import AgentNode, AnyNode, NodeType, ToolNode
+from yggdrasil_lm.core.store import GraphStore
 
 
 @dataclass

@@ -13,8 +13,8 @@ from typing import Any
 
 import networkx as nx
 
-from yggdrasil.core.edges import Edge, EdgeType
-from yggdrasil.core.nodes import AnyNode, Node, NodeType, node_from_dict
+from yggdrasil_lm.core.edges import Edge, EdgeType
+from yggdrasil_lm.core.nodes import AnyNode, Node, NodeType, node_from_dict
 
 
 # ---------------------------------------------------------------------------

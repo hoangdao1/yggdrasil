@@ -70,8 +70,8 @@ This lets a team answer both:
 For event-by-event trace inspection beyond `explain_run`:
 
 ```python
-from yggdrasil.trace_ui import inspect_trace, print_trace
-from yggdrasil.viz import serve_trace
+from yggdrasil_lm.trace_ui import inspect_trace, print_trace
+from yggdrasil_lm.viz import serve_trace
 
 # Rich terminal tree
 inspect_trace(ctx)

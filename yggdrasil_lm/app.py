@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from yggdrasil.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
-from yggdrasil.core.edges import Edge
-from yggdrasil.core.executor import GraphExecutor
-from yggdrasil.core.nodes import AgentNode, ContextNode, PromptNode, ToolNode
-from yggdrasil.core.store import GraphStore, NetworkXGraphStore
-from yggdrasil.tools.registry import ToolRegistry, default_registry
+from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
+from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.executor import GraphExecutor
+from yggdrasil_lm.core.nodes import AgentNode, ContextNode, PromptNode, ToolNode
+from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
+from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 
 NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | str
 END_NODE = "__END__"

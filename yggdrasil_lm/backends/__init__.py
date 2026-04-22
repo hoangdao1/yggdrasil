@@ -1,4 +1,4 @@
-from yggdrasil.backends.llm import (
+from yggdrasil_lm.backends.llm import (
     AnthropicBackend,
     LLMBackend,
     LLMResponse,
@@ -11,5 +11,5 @@ __all__ = [
     "LLMBackend", "LLMResponse", "ToolCall", "ToolResult",
     "AnthropicBackend", "OpenAIBackend",
     # ClaudeCodeExecutor is imported lazily to avoid pulling in claude-agent-sdk
-    # at startup: from yggdrasil.backends.claude_code import ClaudeCodeExecutor
+    # at startup: from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 ]

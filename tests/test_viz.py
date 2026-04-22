@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from yggdrasil.core.edges import Edge
-from yggdrasil.core.executor import ExecutionContext, TraceEvent
-from yggdrasil.core.nodes import AgentNode, ContextNode
-from yggdrasil.core.store import NetworkXGraphStore
-from yggdrasil.viz.server import VizServer, _event_to_dict, _store_to_snapshot, _summarize_events
+from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
+from yggdrasil_lm.core.nodes import AgentNode, ContextNode
+from yggdrasil_lm.core.store import NetworkXGraphStore
+from yggdrasil_lm.viz.server import VizServer, _event_to_dict, _store_to_snapshot, _summarize_events
 
 
 # ---------------------------------------------------------------------------
@@ -694,7 +694,7 @@ class TestVizServerStop:
 class TestServeTrace:
     @pytest.mark.asyncio
     async def test_serve_trace_calls_finalize(self):
-        from yggdrasil.viz.server import serve_trace
+        from yggdrasil_lm.viz.server import serve_trace
 
         ctx = _make_ctx(query="ollama gemma4:26b test", num_events=2)
 
@@ -702,7 +702,7 @@ class TestServeTrace:
         mock_server._metadata = {}
         mock_server.port = 19999
 
-        with patch("yggdrasil.viz.server.VizServer", return_value=mock_server):
+        with patch("viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
@@ -712,7 +712,7 @@ class TestServeTrace:
 
     @pytest.mark.asyncio
     async def test_serve_trace_sets_metadata(self):
-        from yggdrasil.viz.server import serve_trace
+        from yggdrasil_lm.viz.server import serve_trace
 
         ctx = _make_ctx(query="yggdrasil test")
 
@@ -720,7 +720,7 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("yggdrasil.viz.server.VizServer", return_value=mock_server):
+        with patch("viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
@@ -730,7 +730,7 @@ class TestServeTrace:
 
     @pytest.mark.asyncio
     async def test_serve_trace_passes_store_to_finalize(self):
-        from yggdrasil.viz.server import serve_trace
+        from yggdrasil_lm.viz.server import serve_trace
 
         ctx = _make_ctx(query="yggdrasil test")
         store = NetworkXGraphStore()
@@ -739,7 +739,7 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("yggdrasil.viz.server.VizServer", return_value=mock_server):
+        with patch("viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, store=store, port=19999, open_browser=False, wait=False)
 

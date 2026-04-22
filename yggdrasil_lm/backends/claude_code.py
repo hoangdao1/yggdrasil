@@ -28,8 +28,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from yggdrasil.backends.llm import default_backend
-from yggdrasil.core.executor import (
+from yggdrasil_lm.backends.llm import default_backend
+from yggdrasil_lm.core.executor import (
     AgentComposer,
     AgentResult,
     ExecutionContext,
@@ -39,8 +39,8 @@ from yggdrasil.core.executor import (
     _ROUTER_SYSTEM,
     _ROUTER_TEMPLATE,
 )
-from yggdrasil.core.nodes import AgentNode
-from yggdrasil.core.store import GraphStore
+from yggdrasil_lm.core.nodes import AgentNode
+from yggdrasil_lm.core.store import GraphStore
 
 # ---------------------------------------------------------------------------
 # Optional SDK imports — kept at module level so tests can patch them.
@@ -231,7 +231,7 @@ class ClaudeCodeExecutor(GraphExecutor):
         same routing prompt as the parent class, but authenticated via the
         Claude Code account instead of ANTHROPIC_API_KEY.
         """
-        from yggdrasil.core.store import NodeType
+        from yggdrasil_lm.core.store import NodeType
 
         if candidates is None:
             all_nodes = await self.store.list_nodes(node_type=NodeType.AGENT)
