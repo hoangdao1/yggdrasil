@@ -2695,6 +2695,7 @@ ClaudeCodeExecutor(
     permission_mode:    str = "default",
     max_budget_usd:     float | None = None,
     cwd:                str | None = None,
+    cli_path:           str | None = None,
 )
 ```
 
@@ -2710,6 +2711,7 @@ ClaudeCodeExecutor(
 | `permission_mode` | `str` | `"default"` | How the sub-agent handles permission prompts. One of `"default"`, `"acceptEdits"`, `"bypassPermissions"`. |
 | `max_budget_usd` | `float \| None` | `None` | Optional per-invocation USD cost cap. |
 | `cwd` | `str \| None` | `None` | Working directory for file operations. |
+| `cli_path` | `str \| None` | `None` | Optional path to the system `claude` CLI. Useful when sub-agents should authenticate through the local Claude Code account instead of an API key. |
 
 **Methods:**
 
@@ -2717,7 +2719,7 @@ ClaudeCodeExecutor(
 
 #### `route(query, candidates=None) → RoutingDecision`
 
-Lazily initialises a lightweight `AnthropicBackend` the first time routing is needed (since `ClaudeCodeExecutor` does not use `self._backend` for agent execution — the Claude Code SDK owns that loop). Subsequent routing calls reuse the same backend instance.
+Routes through the local Claude Code CLI with `--print` when available, so the router can use the same Claude Code authentication as sub-agent execution. If the CLI is unavailable, it falls back to the normal `GraphExecutor.route()` path and may require the default Anthropic backend configuration.
 
 ```python
 # Works identically to GraphExecutor.route() — extra backend init is transparent
@@ -2762,6 +2764,11 @@ _execute_agent()
     ├── if no MCP server  →  _run_with_query()        (lighter path)
     └── if MCP server     →  _run_with_sdk_client()   (full client required)
 ```
+
+Yggdrasil `ToolNode`s bridged through the in-process MCP server emit normal
+`tool_call` and `tool_result` trace events with tool name, callable ref, input,
+success, duration, and output summary. Claude Code built-in tools emit
+best-effort trace events from SDK tool-use metadata.
 
 ---
 
@@ -3261,4 +3268,3 @@ Real-time event stream. Connect before or after the run starts — late-joining 
 Use `explain_run(ctx)` to get a structured summary of a completed run.
 
 ---
-

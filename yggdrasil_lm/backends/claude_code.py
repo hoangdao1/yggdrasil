@@ -24,22 +24,22 @@ import asyncio
 import json
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
-from yggdrasil_lm.backends.llm import default_backend
+from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolResult, default_backend
 from yggdrasil_lm.core.executor import (
     AgentComposer,
-    AgentResult,
     ExecutionContext,
     GraphExecutor,
     RoutingDecision,
-    TraceEvent,
     _ROUTER_SYSTEM,
     _ROUTER_TEMPLATE,
+    _summarise,
 )
-from yggdrasil_lm.core.nodes import AgentNode
+from yggdrasil_lm.core.nodes import AgentNode, ToolNode
 from yggdrasil_lm.core.store import GraphStore
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,38 @@ class _AgentRunResult:
     text: str
     tool_calls: int
     cost_usd: float | None
+    tool_events: list[dict[str, Any]] = field(default_factory=list)
+
+
+class _ClaudeCodeBootstrapBackend(LLMBackend):
+    """Placeholder backend used only to satisfy GraphExecutor initialization."""
+
+    async def chat(
+        self,
+        model: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        max_tokens: int = 8096,
+    ) -> LLMResponse:
+        raise RuntimeError("ClaudeCodeExecutor does not use LLMBackend.chat().")
+
+    def extend_messages(
+        self,
+        messages: list[dict[str, Any]],
+        response: LLMResponse,
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        raise RuntimeError("ClaudeCodeExecutor does not use LLMBackend.extend_messages().")
+
+
+class ClaudeCodeAgentError(RuntimeError):
+    """Structured error raised when the Claude Code SDK returns a failed result."""
+
+    def __init__(self, subtype: str, result: str) -> None:
+        self.subtype = subtype
+        self.result = result
+        super().__init__(f"Claude Code agent error ({subtype}): {result}")
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +133,56 @@ def _json_type_to_python(type_str: str) -> type:
     }.get(type_str, str)
 
 
-def _build_mcp_server(composed: Any, tool_fns: dict) -> Any | None:
+def _validate_tool_args(args: dict[str, Any], schema: dict[str, Any], tool_name: str) -> None:
+    if not schema:
+        return
+    if schema.get("type") == "object" and not isinstance(args, dict):
+        raise ValueError(f"{tool_name} input must be an object")
+    for key in schema.get("required", []):
+        if key not in args:
+            raise ValueError(f"{tool_name} input missing required field {key!r}")
+    for key, subschema in schema.get("properties", {}).items():
+        if key not in args:
+            continue
+        value = args[key]
+        schema_type = subschema.get("type")
+        if "enum" in subschema and value not in subschema["enum"]:
+            raise ValueError(f"{tool_name}.{key} must be one of {subschema['enum']!r}")
+        expected_type = _json_type_to_python(schema_type or "")
+        if schema_type == "number":
+            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif schema_type == "integer":
+            ok = isinstance(value, int) and not isinstance(value, bool)
+        elif schema_type:
+            ok = isinstance(value, expected_type)
+        else:
+            ok = True
+        if not ok:
+            raise ValueError(f"{tool_name}.{key} must be a {schema_type}")
+
+
+def _format_tool_content(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, default=str, sort_keys=True)
+    except TypeError:
+        return str(result)
+
+
+def _extract_tool_event(block: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(block, "id", None),
+        "name": getattr(block, "name", "claude_code_builtin"),
+        "input": getattr(block, "input", None),
+    }
+
+
+def _build_mcp_server(
+    composed: Any,
+    tool_fns: dict,
+    on_tool_result: Callable[[ToolNode, dict[str, Any], Any, bool, int], None] | None = None,
+) -> Any | None:
     """Wrap each ComposedAgent ToolNode as an in-process Agent SDK MCP tool.
 
     Returns a server object (from create_sdk_mcp_server) to pass to
@@ -133,17 +214,33 @@ def _build_mcp_server(composed: Any, tool_fns: dict) -> Any | None:
 
         is_async = tn.is_async
 
-        def _make_handler(tool_fn: Any, async_fn: bool) -> Any:
+        def _make_handler(tool_node: ToolNode, tool_fn: Any, async_fn: bool) -> Any:
             async def handler(args: dict) -> dict:
-                result = (
-                    await tool_fn(args)
-                    if async_fn
-                    else await asyncio.to_thread(tool_fn, args)
-                )
-                return {"content": [{"type": "text", "text": str(result)}]}
+                t0 = time.monotonic()
+                success = False
+                result: Any = None
+                try:
+                    _validate_tool_args(args, tool_node.input_schema, tool_node.name)
+                    result = (
+                        await tool_fn(args)
+                        if async_fn
+                        else await asyncio.to_thread(tool_fn, args)
+                    )
+                    success = True
+                    return {"content": [{"type": "text", "text": _format_tool_content(result)}]}
+                except Exception as exc:
+                    result = {"error": str(exc), "tool": tool_node.name}
+                    return {
+                        "isError": True,
+                        "content": [{"type": "text", "text": _format_tool_content(result)}],
+                    }
+                finally:
+                    if on_tool_result:
+                        duration_ms = int((time.monotonic() - t0) * 1000)
+                        on_tool_result(tool_node, args, result, success, duration_ms)
             return handler
 
-        handler = _make_handler(fn, is_async)
+        handler = _make_handler(tn, fn, is_async)
         decorated = cc_tool(tn.name, tn.description, param_types)(handler)
         sdk_tools.append(decorated)
 
@@ -203,7 +300,7 @@ class ClaudeCodeExecutor(GraphExecutor):
         super().__init__(
             store,
             composer=composer,
-            backend=default_backend(),
+            backend=_ClaudeCodeBootstrapBackend(),
             embedder=embedder,
             router_model="claude-haiku-4-5-20251001",
         )
@@ -263,9 +360,12 @@ class ClaudeCodeExecutor(GraphExecutor):
                 cli, "--print", "--output-format", "text", prompt,
                 env=proc_env,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await proc.communicate()
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode:
+                err = stderr.decode(errors="replace").strip()
+                raise RuntimeError(f"Claude Code router failed ({proc.returncode}): {err}")
             text = stdout.decode().strip()
             # Strip markdown code fences if present
             if text.startswith("```"):
@@ -274,15 +374,19 @@ class ClaudeCodeExecutor(GraphExecutor):
                     if not line.startswith("```")
                 ).strip()
             data = json.loads(text)
+            agent_id = str(data["agent"])
+            candidate_ids = {agent.node_id for agent in candidates}
+            if agent_id not in candidate_ids:
+                raise ValueError(f"Router returned unknown agent id {agent_id!r}")
             return RoutingDecision(
-                agent_id=str(data["agent"]),
+                agent_id=agent_id,
                 reason=str(data.get("reason", "")),
                 confidence=float(data.get("confidence", 0.5)),
             )
-        except Exception:
+        except Exception as exc:
             return RoutingDecision(
                 agent_id=candidates[0].node_id,
-                reason="Fallback: CLI routing failed.",
+                reason=f"Fallback: CLI routing failed ({type(exc).__name__}).",
                 confidence=0.5,
             )
 
@@ -333,8 +437,42 @@ class ClaudeCodeExecutor(GraphExecutor):
         # Build MCP server map — start with any user-supplied servers
         mcp_servers: dict = dict(self._extra_mcp)
 
+        bridged_tool_names: set[str] = set()
+
+        def record_mcp_tool_result(
+            tool_node: ToolNode,
+            args: dict[str, Any],
+            result: Any,
+            success: bool,
+            duration_ms: int,
+        ) -> None:
+            bridged_tool_names.add(tool_node.name)
+            call_event = self._emit(
+                ctx, "tool_call", tool_node.node_id, tool_node.name,
+                payload={
+                    "tool_name": tool_node.name,
+                    "callable_ref": tool_node.callable_ref,
+                    "input": args,
+                    "source": "claude_code_mcp",
+                },
+                parent_event_id=agent_event_id,
+            )
+            if success:
+                ctx.outputs[tool_node.node_id] = result
+            self._emit(
+                ctx, "tool_result", tool_node.node_id, tool_node.name,
+                payload={
+                    "tool_name": tool_node.name,
+                    "output_summary": _summarise(_format_tool_content(result)),
+                    "success": success,
+                    "source": "claude_code_mcp",
+                },
+                parent_event_id=call_event.event_id,
+                duration_ms=duration_ms,
+            )
+
         # Bridge graph-registered ToolNodes as an in-process MCP server
-        tool_mcp = _build_mcp_server(composed, self._tool_fns)
+        tool_mcp = _build_mcp_server(composed, self._tool_fns, record_mcp_tool_result)
         if tool_mcp:
             mcp_servers["yggdrasil-tools"] = tool_mcp
 
@@ -351,18 +489,61 @@ class ClaudeCodeExecutor(GraphExecutor):
             **({"cli_path": self._cli_path} if self._cli_path else {}),
         )
 
-        run_result: _AgentRunResult = await (
-            self._run_with_sdk_client(ctx.query, options)
-            if tool_mcp
-            else self._run_with_query(ctx.query, options)
-        )
-
-        # Emit one tool_call trace event per tool invocation so metrics count them.
-        for _ in range(run_result.tool_calls):
+        try:
+            run_result: _AgentRunResult = await (
+                self._run_with_sdk_client(ctx.query, options)
+                if tool_mcp
+                else self._run_with_query(ctx.query, options)
+            )
+        except ClaudeCodeAgentError as exc:
             self._emit(
-                ctx, "tool_call", node.node_id, node.name or "",
-                payload={"tool_name": "claude_code_builtin", "callable_ref": ""},
+                ctx, "error", node.node_id, node.name or "",
+                payload={
+                    "source": "claude_code",
+                    "subtype": exc.subtype,
+                    "message": exc.result,
+                },
                 parent_event_id=agent_event_id,
+            )
+            raise
+        except Exception as exc:
+            self._emit(
+                ctx, "error", node.node_id, node.name or "",
+                payload={
+                    "source": "claude_code",
+                    "subtype": type(exc).__name__,
+                    "message": str(exc),
+                },
+                parent_event_id=agent_event_id,
+            )
+            raise
+
+        # Built-in Claude Code tools do not return structured results through the
+        # same in-process bridge, but ToolUseBlock still gives useful call data.
+        for tool_event in run_result.tool_events:
+            tool_name = str(tool_event.get("name") or "claude_code_builtin")
+            if tool_name in bridged_tool_names:
+                continue
+            call_event = self._emit(
+                ctx, "tool_call", node.node_id, node.name or "",
+                payload={
+                    "tool_name": tool_name,
+                    "callable_ref": "",
+                    "input": tool_event.get("input"),
+                    "tool_call_id": tool_event.get("id"),
+                    "source": "claude_code_builtin",
+                },
+                parent_event_id=agent_event_id,
+            )
+            self._emit(
+                ctx, "tool_result", node.node_id, node.name or "",
+                payload={
+                    "tool_name": tool_name,
+                    "output_summary": "Result handled inside Claude Code.",
+                    "success": True,
+                    "source": "claude_code_builtin",
+                },
+                parent_event_id=call_event.event_id,
             )
 
         intent = await self._infer_intent(run_result.text, node)
@@ -392,28 +573,34 @@ class ClaudeCodeExecutor(GraphExecutor):
         result_text = ""
         tool_call_count = 0
         cost_usd: float | None = None
+        tool_events: list[dict[str, Any]] = []
 
         async for message in cc_query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if ToolUseBlock and isinstance(block, ToolUseBlock):
                         tool_call_count += 1
+                        tool_events.append(_extract_tool_event(block))
             elif isinstance(message, ResultMessage):
                 if getattr(message, "is_error", False):
                     subtype = getattr(message, "subtype", "unknown")
-                    raise RuntimeError(
-                        f"Claude Code agent error ({subtype}): {message.result or ''}"
-                    )
+                    raise ClaudeCodeAgentError(subtype, message.result or "")
                 result_text = message.result or ""
                 cost_usd = getattr(message, "total_cost_usd", None)
 
-        return _AgentRunResult(text=result_text, tool_calls=tool_call_count, cost_usd=cost_usd)
+        return _AgentRunResult(
+            text=result_text,
+            tool_calls=tool_call_count,
+            cost_usd=cost_usd,
+            tool_events=tool_events,
+        )
 
     async def _run_with_sdk_client(self, prompt: str, options: Any) -> _AgentRunResult:
         """Use ClaudeSDKClient — required for in-process SDK MCP servers."""
         parts: list[str] = []
         tool_call_count = 0
         cost_usd: float | None = None
+        tool_events: list[dict[str, Any]] = []
 
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
@@ -424,14 +611,16 @@ class ClaudeCodeExecutor(GraphExecutor):
                             parts.append(block.text)
                         if ToolUseBlock and isinstance(block, ToolUseBlock):
                             tool_call_count += 1
+                            tool_events.append(_extract_tool_event(block))
                 elif isinstance(message, ResultMessage):
                     if getattr(message, "is_error", False):
                         subtype = getattr(message, "subtype", "unknown")
-                        raise RuntimeError(
-                            f"Claude Code agent error ({subtype}): {message.result or ''}"
-                        )
+                        raise ClaudeCodeAgentError(subtype, message.result or "")
                     cost_usd = getattr(message, "total_cost_usd", None)
 
         return _AgentRunResult(
-            text="\n".join(parts), tool_calls=tool_call_count, cost_usd=cost_usd
+            text="\n".join(parts),
+            tool_calls=tool_call_count,
+            cost_usd=cost_usd,
+            tool_events=tool_events,
         )
