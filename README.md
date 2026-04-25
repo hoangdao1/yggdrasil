@@ -141,6 +141,21 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+Want local Claude Code sub-agents instead of a hosted API backend?
+
+```python
+from yggdrasil_lm.app import GraphApp
+
+app = GraphApp(
+    provider="claude-code",
+    cwd="/path/to/project",
+    permission_mode="acceptEdits",
+)
+```
+
+This uses your Claude Code executor setup and can bridge graph `ToolNode`s into
+the sub-agent as in-process MCP tools.
+
 See [API reference §2 Builder API](API_REFERENCE.md#2-builder-api) for the full `GraphApp` surface, including `add_tool(fn=..., attach=True, agent=...)`, `add_context`, `add_prompt`, and `delegate`.
 
 ## Why This Project Exists

@@ -12,6 +12,7 @@ from yggdrasil_lm.app import (
     create_tool,
 )
 from yggdrasil_lm.backends.llm import AnthropicBackend, OpenAIBackend
+from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
 from yggdrasil_lm.core.nodes import (
     AgentNode,
     ApprovalNode,
@@ -36,7 +37,7 @@ from yggdrasil_lm.trace_ui import inspect_trace
 
 __all__ = [
     "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_tool",
-    "AnthropicBackend", "OpenAIBackend",
+    "AnthropicBackend", "OpenAIBackend", "ClaudeCodeExecutor",
     "BatchRun", "BatchItemResult", "BatchStatus",
     "AgentNode", "ApprovalNode", "ContextNode", "ToolNode", "GraphNode",
     "RetryPolicy", "ExecutionPolicy", "RouteRule",

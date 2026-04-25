@@ -96,7 +96,8 @@ def create_executor(
 
     Args:
         store: Graph storage backend.
-        provider: One of "anthropic", "compatible", "openai", "openai-compatible", or None.
+        provider: One of "anthropic", "claude-code", "compatible", "openai",
+            "openai-compatible", or None.
         backend: Explicit backend instance. Takes precedence over provider.
         **backend_kwargs: Passed to the backend constructor when provider is set.
     """
@@ -108,10 +109,15 @@ def create_executor(
     provider_key = provider.strip().lower()
     if provider_key == "anthropic":
         return GraphExecutor(store, backend=AnthropicBackend(**backend_kwargs))
+    if provider_key in {"claude-code", "claude_code", "claudecode"}:
+        from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
+
+        return ClaudeCodeExecutor(store, **backend_kwargs)
     if provider_key in {"openai", "openai-compatible", "compatible"}:
         return GraphExecutor(store, backend=OpenAIBackend(**backend_kwargs))
     raise ValueError(
-        f"Unknown provider: {provider!r}. Use 'anthropic', 'compatible', or pass backend=..."
+        f"Unknown provider: {provider!r}. Use 'anthropic', 'claude-code', "
+        "'compatible', or pass backend=..."
     )
 
 
