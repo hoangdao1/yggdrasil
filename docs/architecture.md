@@ -132,6 +132,19 @@ The most important architectural constraint is this:
 - changes to the agent system should be representable as graph/data changes
 - explanations of behavior should be recoverable from the runtime and graph state
 
+## Node Type Summary
+
+| Node type | Runs LLM? | Primary role |
+|---|---|---|
+| `AgentNode` | Yes | LLM execution with tools, context, and routing |
+| `ToolNode` | No | Callable offered to an agent as an LLM tool |
+| `TransformNode` | No | Pure-Python data reshape between pipeline steps (split / join / filter) |
+| `ApprovalNode` | No | Human-in-the-loop inbox step |
+| `ContextNode` | No | Passive knowledge chunk injected into agent prompts |
+| `PromptNode` | No | Reusable Jinja2 prompt template |
+| `SchemaNode` | No | JSON Schema contract (validates ToolNode / ContextNode I/O) |
+| `GraphNode` | — | Pointer to a reusable sub-graph |
+
 ## Contributor Guidance
 
 - Put new user ergonomics in the beginner API or docs first.

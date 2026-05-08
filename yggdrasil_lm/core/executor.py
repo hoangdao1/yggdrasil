@@ -45,6 +45,7 @@ from yggdrasil_lm.core.nodes import (
     RouteRule,
     SchemaNode,
     ToolNode,
+    TransformNode,
 )
 from yggdrasil_lm.core.store import GraphStore, _cosine, _normalize
 
@@ -1601,7 +1602,10 @@ class GraphExecutor:
         Nodes with no unresolved dependencies execute in parallel per wave.
         Results flow downstream via ctx.outputs.
         """
-        # Build local dependency dict from the graph reachable from entry
+        # Build local dependency dict from the graph reachable from entry.
+        # TransformNode.input_keys that reference node_ids in the graph are
+        # treated as explicit fan-in dependencies so the sorter waits for all
+        # listed branches before firing the transform.
         dep_map: dict[str, set[str]] = {}
         visited: set[str] = set()
         queue = [entry_node_id]
@@ -1617,6 +1621,14 @@ class GraphExecutor:
                 dep_map.setdefault(e.dst_id, set()).add(nid)
                 if e.dst_id not in visited:
                     queue.append(e.dst_id)
+
+        # Second pass: add TransformNode.input_keys as explicit dependencies.
+        for nid in list(dep_map):
+            node = await self.store.get_node(nid)
+            if isinstance(node, TransformNode) and node.input_keys:
+                for key in node.input_keys:
+                    if key in dep_map:  # key is a node_id in this subgraph
+                        dep_map[nid].add(key)
 
         sorter = graphlib.TopologicalSorter(dep_map)
         sorter.prepare()
@@ -1694,6 +1706,8 @@ class GraphExecutor:
                        payload={"exit_node_id": node.exit_node_id or "", "summary": _summarise(result)},
                        parent_event_id=parent_event_id)
             return result
+        if isinstance(node, TransformNode):
+            return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, PromptNode):
             return node.render()
         return None
@@ -2044,6 +2058,72 @@ class GraphExecutor:
             policy=node.execution_policy,
         )
         await self._validate_node_schemas(node, output_payload=result, ctx=ctx)
+        if idempotency_key:
+            ctx.state.idempotency_cache[idempotency_key] = result
+        return result
+
+    async def _execute_transform(
+        self,
+        node: TransformNode,
+        ctx: ExecutionContext,
+        parent_event_id: str | None = None,
+    ) -> Any:
+        fn = self._tool_fns.get(node.callable_ref)
+        if fn is None:
+            raise RuntimeError(
+                f"Transform callable not registered: {node.callable_ref!r}. "
+                "Call executor.register_tool(ref, fn) before running."
+            )
+
+        # Collect fan-in inputs: each input_key is tried first as a node_id in
+        # ctx.outputs, then as a key in ctx.state.data.  When no input_keys are
+        # declared, use the last output if available, otherwise ctx.state.data
+        # (covers the case where the transform is the entry node).
+        if node.input_keys:
+            input_data: dict[str, Any] = {}
+            for key in node.input_keys:
+                if key in ctx.outputs:
+                    input_data[key] = ctx.outputs[key]
+                elif key in ctx.state.data:
+                    input_data[key] = ctx.state.data[key]
+        elif ctx.outputs:
+            last = list(ctx.outputs.values())[-1]
+            input_data = dict(last) if isinstance(last, dict) else {"input": last}
+        else:
+            input_data = dict(ctx.state.data)
+
+        idempotency_key = self._idempotency_key(node, input_data)
+        if idempotency_key and idempotency_key in ctx.state.idempotency_cache:
+            return ctx.state.idempotency_cache[idempotency_key]
+
+        t0 = time.monotonic()
+
+        async def invoke() -> Any:
+            if node.is_async:
+                return await fn(input_data)
+            return await asyncio.to_thread(fn, input_data)
+
+        result = await self._call_with_retry(invoke, ctx, node=node, policy=node.execution_policy)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        if node.output_key:
+            ctx.state.data[node.output_key] = result
+
+        self._emit(
+            ctx,
+            "tool_result",
+            node.node_id,
+            node.name or "",
+            payload={
+                "tool_name": node.name,
+                "callable_ref": node.callable_ref,
+                "output_summary": _summarise(result),
+                "success": True,
+                "duration_ms": duration_ms,
+            },
+            parent_event_id=parent_event_id,
+        )
+
         if idempotency_key:
             ctx.state.idempotency_cache[idempotency_key] = result
         return result

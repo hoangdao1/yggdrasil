@@ -11,11 +11,11 @@ from typing import Any
 from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
 from yggdrasil_lm.core.edges import Edge
 from yggdrasil_lm.core.executor import GraphExecutor
-from yggdrasil_lm.core.nodes import AgentNode, ContextNode, PromptNode, ToolNode
+from yggdrasil_lm.core.nodes import AgentNode, ContextNode, PromptNode, ToolNode, TransformNode
 from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
 from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 
-NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | str
+NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | str
 END_NODE = "__END__"
 
 
@@ -58,6 +58,28 @@ def create_tool(
         callable_ref=callable_ref,
         input_schema=input_schema or {"type": "object", "properties": {}},
         output_schema=output_schema or {},
+        is_async=is_async,
+        **kwargs,
+    )
+
+
+def create_transform(
+    name: str,
+    *,
+    callable_ref: str,
+    description: str = "",
+    input_keys: list[str] | None = None,
+    output_key: str = "",
+    is_async: bool = True,
+    **kwargs: Any,
+) -> TransformNode:
+    """Create a TransformNode — a pure-Python data reshape step with no LLM."""
+    return TransformNode(
+        name=name,
+        description=description,
+        callable_ref=callable_ref,
+        input_keys=input_keys or [],
+        output_key=output_key,
         is_async=is_async,
         **kwargs,
     )
@@ -185,6 +207,19 @@ class GraphApp:
             await self.connect_tool(agent, tool)
         return tool
 
+    async def add_transform(
+        self,
+        name: str,
+        *,
+        fn: Any | None = None,
+        **kwargs: Any,
+    ) -> TransformNode:
+        transform = create_transform(name, **kwargs)
+        await self.store.upsert_node(transform)
+        if fn is not None:
+            self.executor.register_tool(transform.callable_ref, fn)
+        return transform
+
     async def add_context(self, name: str, content: str, **kwargs: Any) -> ContextNode:
         ctx = create_context(name, content, **kwargs)
         await self.store.upsert_node(ctx)
@@ -279,4 +314,5 @@ __all__ = [
     "create_executor",
     "create_prompt",
     "create_tool",
+    "create_transform",
 ]

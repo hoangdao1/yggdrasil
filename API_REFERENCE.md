@@ -14,6 +14,7 @@ wraps and how to work directly with the graph primitives.
    - [GraphApp](#graphapp)
    - [create_agent](#create_agent)
    - [create_tool](#create_tool)
+   - [create_transform](#create_transform)
    - [create_context](#create_context)
    - [create_prompt](#create_prompt)
    - [create_executor](#create_executor)
@@ -24,6 +25,7 @@ wraps and how to work directly with the graph primitives.
    - [AgentNode](#agentnode)
    - [ApprovalNode](#approvalnode)
    - [ToolNode](#toolnode)
+   - [TransformNode](#transformnode)
    - [ContextNode](#contextnode)
    - [PromptNode](#promptnode)
    - [SchemaNode](#schemanode)
@@ -183,6 +185,14 @@ class GraphApp:
         **kwargs,
     ) -> ToolNode
 
+    async def add_transform(
+        name: str,
+        *,
+        fn: Callable | None = None,    # auto-register if provided
+        **kwargs,
+    ) -> TransformNode
+    # Create a TransformNode, upsert it, and optionally register the callable.
+
     async def add_context(name: str, content: str, **kwargs) -> ContextNode
 
     async def add_prompt(name: str, template: str, **kwargs) -> PromptNode
@@ -267,6 +277,25 @@ def create_tool(
 
 ---
 
+### create_transform
+
+```python
+def create_transform(
+    name: str,
+    *,
+    callable_ref: str,
+    description:  str = "",
+    input_keys:   list[str] | None = None,  # default: []
+    output_key:   str = "",
+    is_async:     bool = True,
+    **kwargs,
+) -> TransformNode
+```
+
+Creates a `TransformNode`. Equivalent to constructing `TransformNode(...)` directly but sets `input_keys=[]` when `None` is passed.
+
+---
+
 ### create_context
 
 ```python
@@ -328,10 +357,10 @@ The top-level `yggdrasil` package exports ~35 symbols covering the happy-path pr
 
 from yggdrasil import (
     # Entry points
-    GraphApp, create_agent, create_context, create_executor, create_prompt, create_tool,
+    GraphApp, create_agent, create_context, create_executor, create_prompt, create_tool, create_transform,
 
     # Core node types
-    AgentNode, ApprovalNode, ContextNode, ToolNode, GraphNode,
+    AgentNode, ApprovalNode, ContextNode, ToolNode, TransformNode, GraphNode,
     RetryPolicy, ExecutionPolicy, RouteRule,
 
     # Graph primitives
@@ -403,13 +432,14 @@ All nodes are immutable [Pydantic v2](https://docs.pydantic.dev/) models. Every 
 
 ```python
 class NodeType(StrEnum):
-    AGENT   = "agent"
-    TOOL    = "tool"
-    CONTEXT = "context"
-    PROMPT  = "prompt"
-    SCHEMA  = "schema"
-    GRAPH   = "graph"
-    APPROVAL = "approval"
+    AGENT     = "agent"
+    TOOL      = "tool"
+    TRANSFORM = "transform"
+    CONTEXT   = "context"
+    PROMPT    = "prompt"
+    SCHEMA    = "schema"
+    GRAPH     = "graph"
+    APPROVAL  = "approval"
 ```
 
 `node_type` is **frozen** on every subclass — it cannot be changed after construction.
@@ -639,6 +669,83 @@ print(search_tool.to_tool_schema())
 
 ---
 
+### TransformNode
+
+> Import: `from yggdrasil_lm import TransformNode` or `from yggdrasil_lm.core.nodes import TransformNode`
+
+A pure-Python data reshaping step with **no LLM invocation**. Use it to split, join, filter, or reformat data between nodes without burning tokens.
+
+At a glance:
+
+- `callable_ref` points to a registered Python function, same registry as `ToolNode`
+- `input_keys` declares explicit fan-in dependencies (node IDs or `state.data` keys)
+- `output_key` optionally writes the result back to `ctx.state.data` for downstream agents
+- The topological executor treats `input_keys` as hard DAG dependencies — all listed branches must finish before the transform fires
+
+```python
+class TransformNode(Node):
+    node_type:        NodeType          # frozen = NodeType.TRANSFORM
+    callable_ref:     str               # default: ""  — "module.submodule.fn"
+    input_keys:       list[str]         # default: []  — node_ids or state.data keys
+    output_key:       str               # default: ""  — state.data key to write result
+    is_async:         bool              # default: True
+    execution_policy: ExecutionPolicy   # default: ExecutionPolicy()
+```
+
+**Input resolution order** (evaluated at execution time):
+
+1. If `input_keys` is non-empty: collect `ctx.outputs[key]` or `ctx.state.data[key]` for each key, building `{key: value, ...}`
+2. If `input_keys` is empty and prior outputs exist: use the last output dict
+3. If `input_keys` is empty and no prior outputs: use `ctx.state.data` (covers entry-node transforms)
+
+**`callable_ref`** — registered via `executor.register_tool(ref, fn)`. The callable receives a single `dict[str, Any]` and returns any JSON-serialisable value.
+
+**`output_key`** — when set, also writes the result to `ctx.state.data[output_key]` so downstream agents can read it from the injected workflow state JSON.
+
+**Trace** — emits a `tool_result` event so transform steps appear in `print_trace()` and the visualizer.
+
+**Tutorial — fan-in join**
+
+```python
+from yggdrasil_lm import (
+    Edge, GraphExecutor, NetworkXGraphStore, TransformNode, create_agent, create_transform,
+)
+
+def join_results(data: dict) -> dict:
+    parts = [v.get("text", str(v)) for v in data.values()]
+    return {"merged": "\n".join(parts)}
+
+async def example():
+    store = NetworkXGraphStore()
+
+    worker_a = create_agent("WorkerA", system_prompt="Analyze chunk A.")
+    worker_b = create_agent("WorkerB", system_prompt="Analyze chunk B.")
+    joiner = create_transform(
+        "Joiner",
+        callable_ref="myapp.join_results",
+        input_keys=[worker_a.node_id, worker_b.node_id],
+        output_key="joined",
+        is_async=False,
+    )
+    summarizer = create_agent("Summarizer", system_prompt="Summarize the joined results.")
+
+    for node in [worker_a, worker_b, joiner, summarizer]:
+        await store.upsert_node(node)
+
+    # workers → joiner (fan-in; also declared via input_keys)
+    await store.upsert_edge(Edge.delegates_to(worker_a.node_id, joiner.node_id))
+    await store.upsert_edge(Edge.delegates_to(worker_b.node_id, joiner.node_id))
+    await store.upsert_edge(Edge.delegates_to(joiner.node_id, summarizer.node_id))
+
+    executor = GraphExecutor(store)
+    executor.register_tool("myapp.join_results", join_results)
+
+    ctx = await executor.run(worker_a.node_id, "go", strategy="topological")
+    print(ctx.state.data["joined"])
+```
+
+---
+
 ### ContextNode
 
 A passive knowledge or memory chunk injected into an agent's system prompt. Supports **bi-temporal modelling** with two independent timestamp pairs.
@@ -857,7 +964,7 @@ node = node_from_dict(data)
 **Type alias**
 
 ```python
-AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNode | Node
+AnyNode = AgentNode | ToolNode | TransformNode | ContextNode | PromptNode | SchemaNode | GraphNode | Node
 ```
 
 ---

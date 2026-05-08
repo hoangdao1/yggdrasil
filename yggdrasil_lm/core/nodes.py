@@ -27,13 +27,14 @@ def _uuid() -> str:
 # ---------------------------------------------------------------------------
 
 class NodeType(StrEnum):
-    AGENT   = "agent"    # executable — has LLM model + routing table
-    TOOL    = "tool"     # callable — has JSON Schema for input/output
-    CONTEXT = "context"  # passive knowledge/memory chunk (bi-temporal)
-    PROMPT  = "prompt"   # reusable Jinja2 prompt template
-    SCHEMA  = "schema"   # JSON Schema contract
-    GRAPH   = "graph"    # pointer to a sub-graph (meta-graph pattern)
-    APPROVAL = "approval"  # dedicated human approval / inbox step
+    AGENT     = "agent"      # executable — has LLM model + routing table
+    TOOL      = "tool"       # callable — has JSON Schema for input/output
+    CONTEXT   = "context"    # passive knowledge/memory chunk (bi-temporal)
+    PROMPT    = "prompt"     # reusable Jinja2 prompt template
+    SCHEMA    = "schema"     # JSON Schema contract
+    GRAPH     = "graph"      # pointer to a sub-graph (meta-graph pattern)
+    APPROVAL  = "approval"   # dedicated human approval / inbox step
+    TRANSFORM = "transform"  # pure-Python data reshaping step (no LLM)
 
 
 class ConstraintRule(BaseModel):
@@ -357,6 +358,35 @@ class GraphNode(Node):
         return self
 
 
+class TransformNode(Node):
+    """A pure-Python data reshaping step with no LLM invocation.
+
+    Sits between nodes in a pipeline to split, join, filter, or reformat
+    data without burning tokens. The callable receives a dict of collected
+    inputs and returns any value that flows into ctx.outputs and optionally
+    ctx.state.data[output_key].
+
+    input_keys — node_ids or state.data keys to collect before running.
+        When non-empty the topological executor treats them as hard
+        dependencies (fan-in), guaranteeing all listed branches are done
+        before this node fires.
+    output_key — if set, also writes the result to ctx.state.data[output_key]
+        so downstream agents can read it from workflow state.
+    """
+
+    node_type:    NodeType           = Field(default=NodeType.TRANSFORM, frozen=True)
+    callable_ref: str                = ""
+    input_keys:   list[str]          = Field(default_factory=list)
+    output_key:   str                = ""
+    is_async:     bool               = True
+    execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
+
+    @model_validator(mode="after")
+    def _enforce_type(self) -> "TransformNode":
+        object.__setattr__(self, "node_type", NodeType.TRANSFORM)
+        return self
+
+
 class ApprovalNode(Node):
     """A dedicated approval / human-in-the-loop step."""
 
@@ -381,19 +411,20 @@ class ApprovalNode(Node):
 # Union for deserialisation
 # ---------------------------------------------------------------------------
 
-AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNode | ApprovalNode | Node
+AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNode | ApprovalNode | TransformNode | Node
 
 
 def node_from_dict(data: dict[str, Any]) -> AnyNode:
     """Deserialise a node dict into the correct typed subclass."""
     _type_map = {
-        NodeType.AGENT:   AgentNode,
-        NodeType.TOOL:    ToolNode,
-        NodeType.CONTEXT: ContextNode,
-        NodeType.PROMPT:  PromptNode,
-        NodeType.SCHEMA:  SchemaNode,
-        NodeType.GRAPH:   GraphNode,
-        NodeType.APPROVAL: ApprovalNode,
+        NodeType.AGENT:     AgentNode,
+        NodeType.TOOL:      ToolNode,
+        NodeType.CONTEXT:   ContextNode,
+        NodeType.PROMPT:    PromptNode,
+        NodeType.SCHEMA:    SchemaNode,
+        NodeType.GRAPH:     GraphNode,
+        NodeType.APPROVAL:  ApprovalNode,
+        NodeType.TRANSFORM: TransformNode,
     }
     node_type = NodeType(data.get("node_type", NodeType.CONTEXT))
     cls = _type_map.get(node_type, Node)

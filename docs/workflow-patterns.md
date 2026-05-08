@@ -13,6 +13,9 @@ from yggdrasil import (
     GraphExecutor,
     GraphNode,
     NetworkXGraphStore,
+    TransformNode,
+    create_agent,
+    create_transform,
     get_runtime_nodes,
     print_trace,
 )
@@ -244,7 +247,97 @@ This is useful when:
 - intermediate outputs matter for debugging
 - you need structured state shared across a traversal
 
-## 6. Deterministic Approval Routing
+## 6. Split / Join With TransformNode
+
+Use `TransformNode` when you need to reshape data between nodes without an LLM. The most common cases are fan-out splitting and fan-in joining.
+
+**Why not use an agent?** An agent costs tokens and non-deterministically formats output. A `TransformNode` is a plain Python function — fast, free, and testable in isolation.
+
+Typical shape:
+
+```text
+Splitter (TransformNode)
+   → WorkerA
+   → WorkerB       ← parallel branches
+   → WorkerC
+Joiner (TransformNode, input_keys=[A, B, C])
+   → Summarizer
+```
+
+Example:
+
+```python
+def split_items(data: dict) -> dict:
+    items = data.get("items", [])
+    return {f"bucket_{i}": item for i, item in enumerate(items)}
+
+def join_results(data: dict) -> dict:
+    parts = [v.get("text", str(v)) if isinstance(v, dict) else str(v) for v in data.values()]
+    return {"merged": "\n".join(sorted(parts))}
+
+async def split_join_pipeline() -> None:
+    store = NetworkXGraphStore()
+
+    splitter = create_transform(
+        "Splitter",
+        callable_ref="myapp.split_items",
+        output_key="buckets",
+        is_async=False,
+    )
+    worker_a = create_agent("WorkerA", system_prompt="Process bucket_0.")
+    worker_b = create_agent("WorkerB", system_prompt="Process bucket_1.")
+    joiner = create_transform(
+        "Joiner",
+        callable_ref="myapp.join_results",
+        input_keys=[worker_a.node_id, worker_b.node_id],  # explicit fan-in
+        output_key="joined",
+        is_async=False,
+    )
+    summarizer = create_agent("Summarizer", system_prompt="Summarize the joined results.")
+
+    for node in [splitter, worker_a, worker_b, joiner, summarizer]:
+        await store.upsert_node(node)
+
+    # splitter → workers (fan-out)
+    await store.upsert_edge(Edge.delegates_to(splitter.node_id, worker_a.node_id))
+    await store.upsert_edge(Edge.delegates_to(splitter.node_id, worker_b.node_id))
+
+    # workers → joiner (fan-in — also declared via input_keys above)
+    await store.upsert_edge(Edge.delegates_to(worker_a.node_id, joiner.node_id))
+    await store.upsert_edge(Edge.delegates_to(worker_b.node_id, joiner.node_id))
+
+    # joiner → summarizer
+    await store.upsert_edge(Edge.delegates_to(joiner.node_id, summarizer.node_id))
+
+    executor = GraphExecutor(store)
+    executor.register_tool("myapp.split_items", split_items)
+    executor.register_tool("myapp.join_results", join_results)
+
+    ctx = await executor.run(
+        splitter.node_id,
+        "Process items",
+        strategy="topological",
+        state={"items": ["report_q1", "report_q2"]},
+    )
+
+    print(ctx.state.data["joined"])
+    print(ctx.outputs[summarizer.node_id]["text"])
+```
+
+Key points:
+
+- `input_keys=[worker_a.node_id, worker_b.node_id]` tells the topological executor to wait for both workers before the joiner fires — this is the **guaranteed fan-in**, avoiding the `_last_output` race condition present in unstructured parallel execution
+- `output_key` writes the result to `ctx.state.data` so downstream agents can read it from the injected workflow state
+- The callable is registered with `executor.register_tool()`, reusing the same registry as `ToolNode`
+- Transform steps appear in `print_trace()` as `tool_result` events
+
+Use this when:
+
+- you need to chunk or reshape data before workers run
+- you need a deterministic, token-free merge of parallel results
+- you want fan-in behavior that is explicit in the graph, not implicit in `_last_output`
+
+## 7. Deterministic Approval Routing
 
 Use `route_rules` when the next step should be selected from workflow state before the LLM gets a vote.
 
@@ -297,7 +390,7 @@ Use this when:
 - workflow state should override free-form model output
 - compliance or approval rules must be auditable
 
-## 7. Human-In-The-Loop Pause / Resume
+## 8. Human-In-The-Loop Pause / Resume
 
 Use pause / resume when a workflow needs approval or external input between graph steps.
 
@@ -337,7 +430,7 @@ Use this when:
 - an external system posts the next decision later
 - workflows must survive process restarts
 
-## 8. Approval Inbox Nodes
+## 9. Approval Inbox Nodes
 
 Use `ApprovalNode` when the review step should be explicit in the graph instead of encoded as a paused agent.
 
@@ -382,7 +475,7 @@ Use this when:
 
 - Use `sequential` when the workflow is a chain.
 - Use `parallel` when one supervisor fans out to independent workers.
-- Use `topological` when dependencies matter and some waves can run concurrently.
+- Use `topological` when dependencies matter and some waves can run concurrently — required when using `TransformNode` with `input_keys` for fan-in joining.
 
 ## Related Docs
 
