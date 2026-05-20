@@ -7,7 +7,7 @@ The first five patterns focus on orchestration structure. The last two show the 
 Shared imports for the examples below:
 
 ```python
-from yggdrasil import (
+from yggdrasil_lm import (
     AgentNode,
     Edge,
     GraphExecutor,
@@ -344,7 +344,7 @@ Use `route_rules` when the next step should be selected from workflow state befo
 Example:
 
 ```python
-from yggdrasil import AgentNode, GraphExecutor, NetworkXGraphStore, RouteRule
+from yggdrasil_lm import AgentNode, GraphExecutor, NetworkXGraphStore, RouteRule
 
 
 async def approval_flow() -> None:
@@ -397,7 +397,7 @@ Use pause / resume when a workflow needs approval or external input between grap
 Example:
 
 ```python
-from yggdrasil import AgentNode, GraphExecutor, NetworkXGraphStore
+from yggdrasil_lm import AgentNode, GraphExecutor, NetworkXGraphStore
 
 
 async def pause_resume() -> None:
@@ -435,7 +435,7 @@ Use this when:
 Use `ApprovalNode` when the review step should be explicit in the graph instead of encoded as a paused agent.
 
 ```python
-from yggdrasil import ApprovalNode, AgentNode, GraphExecutor, NetworkXGraphStore
+from yggdrasil_lm import ApprovalNode, AgentNode, GraphExecutor, NetworkXGraphStore
 
 
 async def approval_inbox() -> None:

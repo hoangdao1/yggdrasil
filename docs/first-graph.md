@@ -11,7 +11,7 @@ Create one agent, attach one built-in tool, run one query.
 ```python
 import asyncio
 
-from yggdrasil import GraphApp
+from yggdrasil_lm import GraphApp
 
 
 async def main() -> None:

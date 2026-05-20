@@ -23,7 +23,7 @@ It adds:
 ## Basic Example
 
 ```python
-from yggdrasil import NetworkXGraphStore, create_executor
+from yggdrasil_lm import NetworkXGraphStore, create_executor
 from yggdrasil_lm.batch import BatchExecutor
 
 

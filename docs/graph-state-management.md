@@ -23,7 +23,7 @@ resumed    = await executor.resume_from_checkpoint(
 execution can be enumerated and removed:
 
 ```python
-from yggdrasil import get_runtime_nodes, cleanup_session
+from yggdrasil_lm import get_runtime_nodes, cleanup_session
 
 nodes = await get_runtime_nodes(store, ctx.session_id)
 await cleanup_session(store, ctx.session_id)

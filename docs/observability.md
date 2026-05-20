@@ -200,7 +200,7 @@ This lets you send execution data to systems like Datadog, Jaeger, SigNoz, and H
 Tool results and generated context can become runtime nodes during execution:
 
 ```python
-from yggdrasil import cleanup_session, get_runtime_nodes
+from yggdrasil_lm import cleanup_session, get_runtime_nodes
 
 runtime_nodes = await get_runtime_nodes(store, ctx.session_id)
 await cleanup_session(store, ctx.session_id)
