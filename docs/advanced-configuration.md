@@ -12,7 +12,7 @@ Yggdrasil supports:
 ### Anthropic
 
 ```python
-from yggdrasil import GraphExecutor
+from yggdrasil_lm import GraphExecutor
 
 executor = GraphExecutor(store)
 ```
@@ -29,7 +29,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### OpenAI API
 
 ```python
-from yggdrasil import GraphExecutor, OpenAIBackend
+from yggdrasil_lm import GraphExecutor, OpenAIBackend
 
 executor = GraphExecutor(
     store,
@@ -49,7 +49,7 @@ export OPENAI_API_KEY=sk-...
 Ollama example:
 
 ```python
-from yggdrasil import GraphExecutor, OpenAIBackend
+from yggdrasil_lm import GraphExecutor, OpenAIBackend
 
 executor = GraphExecutor(
     store,
@@ -225,7 +225,7 @@ If a `decision_table` row matches, the executor does not continue to later routi
 #### Example
 
 ```python
-from yggdrasil import AgentNode, ConstraintRule, DecisionRule, DecisionTable, RouteRule
+from yggdrasil_lm import AgentNode, ConstraintRule, DecisionRule, DecisionTable, RouteRule
 
 agent = AgentNode(
     name="SupportIntake",

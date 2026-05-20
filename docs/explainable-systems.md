@@ -12,7 +12,7 @@ After running the system, use `explain_run(ctx)` to get a structured summary:
 - what route moved the workflow forward?
 
 ```python
-from yggdrasil import explain_run
+from yggdrasil_lm import explain_run
 
 ctx = await executor.run(entry_node_id=agent.node_id, query="...")
 summary = explain_run(ctx)

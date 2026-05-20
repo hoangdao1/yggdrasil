@@ -15,7 +15,7 @@
 Anthropic:
 
 ```python
-from yggdrasil import GraphApp
+from yggdrasil_lm import GraphApp
 
 app = GraphApp(provider="anthropic", api_key="sk-ant-...")
 ```
@@ -23,7 +23,7 @@ app = GraphApp(provider="anthropic", api_key="sk-ant-...")
 Compatible hosted API:
 
 ```python
-from yggdrasil import GraphApp
+from yggdrasil_lm import GraphApp
 
 app = GraphApp(
     provider="compatible",
@@ -34,7 +34,7 @@ app = GraphApp(
 Local compatible server:
 
 ```python
-from yggdrasil import GraphApp
+from yggdrasil_lm import GraphApp
 
 app = GraphApp(
     provider="compatible",
@@ -47,7 +47,7 @@ app = GraphApp(
 Claude Code executor:
 
 ```python
-from yggdrasil import GraphApp
+from yggdrasil_lm import GraphApp
 
 app = GraphApp(
     provider="claude-code",
@@ -64,7 +64,7 @@ executor; routing uses the local `claude` CLI when available.
 ## Low-Level API
 
 ```python
-from yggdrasil import ClaudeCodeExecutor, GraphExecutor, OpenAIBackend
+from yggdrasil_lm import ClaudeCodeExecutor, GraphExecutor, OpenAIBackend
 
 executor = GraphExecutor(
     store,
