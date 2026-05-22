@@ -234,7 +234,7 @@ async def nested_workflow() -> None:
 | `scope_outputs` | Keep inner outputs scoped (default) or merge into parent (legacy). |
 | `execution_policy` | Retry / timeout the whole sub-run as a unit. |
 
-Cycles (a sub-graph that re-enters itself) and recursion depth (>16) are detected and raise `ValueError`. See `examples/subgraph_lmstudio.py` for a runnable demo that wraps an extractor → critic chain and reuses it across multiple parent inputs.
+Cycles (a sub-graph that re-enters itself) and recursion depth (>16) are detected and raise `ValueError`. See `examples/subgraph_reuse.py` for a runnable demo that wraps an extractor → critic chain and reuses it across multiple parent inputs.
 
 **Testing sub-graphs hermetically.** Use `yggdrasil_lm.testing.StubBackend` plus `app.run_subgraph` / `app.dry_run_subgraph` to exercise sub-graphs without a real LLM — see `tests/test_subgraph_helpers.py` for the canonical patterns.
 
