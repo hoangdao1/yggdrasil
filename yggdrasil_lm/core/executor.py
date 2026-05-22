@@ -241,6 +241,9 @@ class ExecutionContext:
     extra_messages: list[dict[str, Any]] = field(default_factory=list)
     state: WorkflowState = field(default_factory=WorkflowState)
     allowed_tools: set[str] | None = None
+    # Stack of GraphNode ids currently being executed — used to detect cycles
+    # in nested sub-graphs. Not serialised in snapshots (it's per-call state).
+    _active_subgraphs: list[str] = field(default_factory=list)
 
     def is_paused(self) -> bool:
         return self.state.status == "paused"
@@ -1695,22 +1698,243 @@ class GraphExecutor:
         if isinstance(node, ContextNode):
             return node.content
         if isinstance(node, GraphNode):
-            self._emit(ctx, "subgraph_enter", node.node_id, node.name or "",
-                       payload={"entry_node_id": node.entry_node_id},
-                       parent_event_id=parent_event_id)
-            sub_entry = await self.store.get_node(node.entry_node_id)
-            result = None
-            if sub_entry:
-                result = await self._run_sequential(sub_entry, ctx)
-            self._emit(ctx, "subgraph_exit", node.node_id, node.name or "",
-                       payload={"exit_node_id": node.exit_node_id or "", "summary": _summarise(result)},
-                       parent_event_id=parent_event_id)
-            return result
+            return await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, TransformNode):
             return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, PromptNode):
             return node.render()
         return None
+
+    # ------------------------------------------------------------------
+    # Sub-graph execution
+    # ------------------------------------------------------------------
+
+    _MAX_SUBGRAPH_DEPTH = 16
+
+    async def _execute_subgraph(
+        self,
+        node:            GraphNode,
+        ctx:             ExecutionContext,
+        parent_event_id: str | None = None,
+    ) -> Any:
+        """Run a GraphNode: descend, route to exit, surface result.
+
+        Behavior:
+        - Honors ``exit_node_id``: the returned value is the exit node's output
+          (falls back to entry_node_id if exit is unset).
+        - Scopes inner outputs to a child context when ``scope_outputs`` is True
+          so reusing the same sub-graph in multiple parents doesn't collide.
+        - Honors ``strategy`` (sequential|parallel|topological).
+        - Resolves ``input_keys`` / ``input_map`` from parent ctx.outputs +
+          state.data and threads them into the sub-run query / state.
+        - Raises ValueError if entry_node_id can't be resolved.
+        - Detects cycles via ctx._active_subgraphs and caps recursion depth.
+        - Wraps the sub-run in the node's execution_policy (retry + timeout).
+        """
+        # Cycle / depth protection
+        if node.node_id in ctx._active_subgraphs:
+            chain = " → ".join(ctx._active_subgraphs + [node.node_id])
+            raise ValueError(f"GraphNode cycle detected: {chain}")
+        if len(ctx._active_subgraphs) >= self._MAX_SUBGRAPH_DEPTH:
+            raise ValueError(
+                f"GraphNode recursion depth exceeded "
+                f"({self._MAX_SUBGRAPH_DEPTH}) at {node.name or node.node_id!r}"
+            )
+
+        if not node.entry_node_id:
+            raise ValueError(
+                f"GraphNode {node.name or node.node_id!r} has no entry_node_id."
+            )
+        sub_entry = await self.store.get_node(node.entry_node_id)
+        if sub_entry is None:
+            raise ValueError(
+                f"GraphNode {node.name or node.node_id!r} entry_node_id "
+                f"{node.entry_node_id!r} not found in graph store."
+            )
+
+        exit_id = node.exit_node_id or node.entry_node_id
+
+        # Resolve parent-side inputs.
+        sub_query = self._resolve_subgraph_query(node, ctx)
+        sub_state_overlay = self._resolve_subgraph_state(node, ctx)
+
+        self._emit(
+            ctx, "subgraph_enter", node.node_id, node.name or "",
+            payload={
+                "entry_node_id": node.entry_node_id,
+                "exit_node_id":  exit_id,
+                "strategy":      node.strategy,
+                "scoped":        node.scope_outputs,
+            },
+            parent_event_id=parent_event_id,
+        )
+
+        async def _run_subgraph() -> Any:
+            if node.scope_outputs:
+                # Child context: isolated outputs/trace, shared state data + session
+                child = ExecutionContext(
+                    query=sub_query,
+                    session_id=ctx.session_id,
+                    max_hops=max(ctx.max_hops - ctx.hop_count, 1),
+                    state=ctx.state,  # share workflow state (and pause/inbox)
+                    allowed_tools=ctx.allowed_tools,
+                    extra_messages=list(ctx.extra_messages),
+                    _active_subgraphs=ctx._active_subgraphs + [node.node_id],
+                )
+                if sub_state_overlay:
+                    ctx.state.data.update(sub_state_overlay)
+                await self._dispatch_strategy(node.strategy, sub_entry, child)
+                # Merge inner trace into parent trace (preserving structure).
+                ctx.trace.extend(child.trace)
+                ctx.hop_count += child.hop_count
+                return child.outputs.get(exit_id)
+            else:
+                # Legacy: inner outputs leak into the parent.
+                ctx._active_subgraphs.append(node.node_id)
+                try:
+                    if sub_state_overlay:
+                        ctx.state.data.update(sub_state_overlay)
+                    if sub_query is not None:
+                        prev_query = ctx.query
+                        ctx.query = sub_query
+                        try:
+                            await self._dispatch_strategy(node.strategy, sub_entry, ctx)
+                        finally:
+                            ctx.query = prev_query
+                    else:
+                        await self._dispatch_strategy(node.strategy, sub_entry, ctx)
+                    return ctx.outputs.get(exit_id)
+                finally:
+                    ctx._active_subgraphs.pop()
+
+        try:
+            result = await self._call_with_retry(
+                _run_subgraph,
+                ctx,
+                node=node,
+                policy=node.execution_policy,
+                parent_event_id=parent_event_id,
+            )
+        except Exception as exc:
+            self._emit(
+                ctx, "subgraph_exit", node.node_id, node.name or "",
+                payload={
+                    "exit_node_id": exit_id,
+                    "summary":      "",
+                    "error":        str(exc),
+                    "error_type":   type(exc).__name__,
+                },
+                parent_event_id=parent_event_id,
+            )
+            raise
+
+        self._emit(
+            ctx, "subgraph_exit", node.node_id, node.name or "",
+            payload={"exit_node_id": exit_id, "summary": _summarise(result)},
+            parent_event_id=parent_event_id,
+        )
+        return result
+
+    async def _dispatch_strategy(
+        self,
+        strategy: str,
+        entry:    AnyNode,
+        ctx:      ExecutionContext,
+    ) -> None:
+        if strategy == "sequential":
+            await self._run_sequential(entry, ctx)
+        elif strategy == "parallel":
+            await self._run_parallel(entry, ctx)
+        elif strategy == "topological":
+            await self._run_topological(entry.node_id, ctx)
+        else:
+            raise ValueError(f"Unknown sub-graph strategy: {strategy!r}")
+
+    async def resolve_subgraph_inputs(
+        self,
+        node: GraphNode | str,
+        ctx:  ExecutionContext | None = None,
+    ) -> dict[str, Any]:
+        """Dry-run a GraphNode's input wiring without executing anything.
+
+        Returns the resolved values the executor *would* use if it ran this
+        sub-graph now: the initial query, the state overlay (from ``input_map``),
+        and the entry / exit node ids (with ``exit_node_id`` defaulted to entry).
+
+        This is the fast-smoke-test entry point: assert that ``input_keys`` and
+        ``input_map`` are wired correctly against a parent context without
+        burning tokens.
+
+        Raises:
+            ValueError: if the node isn't a GraphNode, or if entry_node_id is
+                unset / unresolvable.
+        """
+        if isinstance(node, str):
+            resolved = await self.store.get_node(node)
+            if resolved is None:
+                raise ValueError(f"Node {node!r} not found in graph store.")
+            node = resolved
+        if not isinstance(node, GraphNode):
+            raise ValueError(
+                f"resolve_subgraph_inputs expected GraphNode, got {type(node).__name__}"
+            )
+        if not node.entry_node_id:
+            raise ValueError(
+                f"GraphNode {node.name or node.node_id!r} has no entry_node_id."
+            )
+        sub_entry = await self.store.get_node(node.entry_node_id)
+        if sub_entry is None:
+            raise ValueError(
+                f"GraphNode {node.name or node.node_id!r} entry_node_id "
+                f"{node.entry_node_id!r} not found in graph store."
+            )
+        ctx = ctx or ExecutionContext(query="")
+        return {
+            "entry_node_id": node.entry_node_id,
+            "exit_node_id":  node.exit_node_id or node.entry_node_id,
+            "strategy":      node.strategy,
+            "scope_outputs": node.scope_outputs,
+            "query":         self._resolve_subgraph_query(node, ctx),
+            "state_overlay": self._resolve_subgraph_state(node, ctx),
+        }
+
+    def _resolve_subgraph_query(
+        self,
+        node: GraphNode,
+        ctx:  ExecutionContext,
+    ) -> QueryContent:
+        """Build the sub-graph's initial query from input_keys.
+
+        Each key is looked up first in ctx.outputs (by node_id), then in
+        ctx.state.data. Text portions of each resolved value are concatenated
+        with double newlines. If no keys are provided, the parent's query is
+        passed through unchanged.
+        """
+        if not node.input_keys:
+            return ctx.query
+        parts: list[str] = []
+        for key in node.input_keys:
+            if key in ctx.outputs:
+                parts.append(_text_of(ctx.outputs[key]))
+            elif key in ctx.state.data:
+                parts.append(_text_of(ctx.state.data[key]))
+        return "\n\n".join(p for p in parts if p) or _query_text(ctx.query)
+
+    def _resolve_subgraph_state(
+        self,
+        node: GraphNode,
+        ctx:  ExecutionContext,
+    ) -> dict[str, Any]:
+        """Resolve input_map aliases against parent outputs / state."""
+        if not node.input_map:
+            return {}
+        overlay: dict[str, Any] = {}
+        for alias, source in node.input_map.items():
+            if source in ctx.outputs:
+                overlay[alias] = ctx.outputs[source]
+            elif source in ctx.state.data:
+                overlay[alias] = ctx.state.data[source]
+        return overlay
 
     # ------------------------------------------------------------------
     # Agent execution
@@ -2748,3 +2972,22 @@ async def cleanup_session(
 def _summarise(value: Any, max_len: int = 200) -> str:
     s = value if isinstance(value, str) else str(value)
     return s[:max_len] + "…" if len(s) > max_len else s
+
+
+def _text_of(value: Any) -> str:
+    """Best-effort extraction of a string payload from a node output.
+
+    Agent outputs are typically ``{"text": "...", "intent": "...", ...}``.
+    Tool / transform outputs may be raw strings, dicts, or arbitrary values.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("text", "output", "result", "content"):
+            v = value.get(key)
+            if isinstance(v, str):
+                return v
+        return str(value)
+    return str(value)

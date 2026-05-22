@@ -343,14 +343,35 @@ class GraphNode(Node):
     """A node that represents an entire sub-graph (meta-graph pattern).
 
     When the executor encounters a GraphNode it transparently descends into
-    the sub-graph, starting from entry_node_id and stopping at exit_node_id.
+    the sub-graph, starting from entry_node_id, traverses it under the chosen
+    strategy, and exposes only the exit node's output to the parent graph.
     This enables hierarchical agent compositions where the same sub-graph
     can be reused as a single "step" in multiple parent graphs.
+
+    Fields:
+        entry_node_id    — node to start traversal from
+        exit_node_id     — node whose output is the sub-graph result.
+                           If empty, falls back to entry_node_id.
+        strategy         — "sequential" | "parallel" | "topological"
+        input_keys       — parent node_ids (or state.data keys) collected and
+                           passed as the sub-graph's initial query (text join).
+        input_map        — explicit {alias: source_key} mapping. The sub-graph
+                           sees these aliases under its state.data.
+        scope_outputs    — if True (default), inner outputs are kept scoped to
+                           the sub-graph and only the exit node's output is
+                           surfaced to the parent ctx.outputs. If False, all
+                           inner outputs are merged into the parent (legacy).
+        execution_policy — retry / timeout policy applied to the whole sub-run.
     """
 
-    node_type:     NodeType = Field(default=NodeType.GRAPH, frozen=True)
-    entry_node_id: str      = ""   # node to start traversal from
-    exit_node_id:  str      = ""   # node whose output is the sub-graph result
+    node_type:        NodeType        = Field(default=NodeType.GRAPH, frozen=True)
+    entry_node_id:    str             = ""
+    exit_node_id:     str             = ""
+    strategy:         str             = "sequential"
+    input_keys:       list[str]       = Field(default_factory=list)
+    input_map:        dict[str, str]  = Field(default_factory=dict)
+    scope_outputs:    bool            = True
+    execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
 
     @model_validator(mode="after")
     def _enforce_type(self) -> "GraphNode":
