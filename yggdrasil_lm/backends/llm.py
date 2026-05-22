@@ -1,6 +1,6 @@
 """LLM backend abstraction for yggdrasil.
 
-Supports Anthropic and any OpenAI-compatible API (Ollama, mlx-lm, LM Studio, etc.).
+Supports Anthropic and any OpenAI-compatible API (Ollama, mlx-lm, vLLM, etc.).
 
 Usage:
     # Anthropic (default)
@@ -157,7 +157,7 @@ class AnthropicBackend(LLMBackend):
 class OpenAIBackend(LLMBackend):
     """Calls any OpenAI-compatible chat completions endpoint.
 
-    Works with Ollama, mlx-lm, LM Studio, vLLM, Together AI, etc.
+    Works with Ollama, mlx-lm, vLLM, Together AI, etc.
 
     Args:
         base_url: API base URL, e.g. "http://localhost:11434/v1" for Ollama.

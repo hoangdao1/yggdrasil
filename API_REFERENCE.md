@@ -977,7 +977,7 @@ print(ctx.outputs[pipeline.node_id])   # synthesizer's output only
 
 **Reusing the same sub-graph**
 
-Because inner outputs are scoped, you can run one `GraphNode` against many parent contexts without name collisions — see `examples/subgraph_lmstudio.py` for a working demo that runs the same `ReviewPipeline` sub-graph against multiple products via LM Studio.
+Because inner outputs are scoped, you can run one `GraphNode` against many parent contexts without name collisions — see `examples/subgraph_reuse.py` for a working demo that runs the same `ReviewPipeline` sub-graph against multiple products.
 
 **Testing sub-graphs in isolation**
 
@@ -2202,7 +2202,7 @@ executor = GraphExecutor(store, backend=backend)
 
 ### OpenAIBackend
 
-Calls any OpenAI-compatible `/chat/completions` endpoint — Ollama, mlx-lm, LM Studio, vLLM, Together AI, etc.
+Calls any OpenAI-compatible `/chat/completions` endpoint — Ollama, mlx-lm, vLLM, Together AI, etc.
 
 ```python
 class OpenAIBackend(LLMBackend):

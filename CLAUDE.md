@@ -176,7 +176,7 @@ These are all runnable and tested — read before building:
 - `examples/parallel_workers.py` — fan-out execution
 - `examples/approval_workflow.py` — human-in-the-loop / ApprovalNode
 - `examples/research_pipeline.py` — full low-level API with routing
-- `examples/subgraph_lmstudio.py` — reusable `GraphNode` sub-graph via LM Studio
+- `examples/subgraph_reuse.py` — reusable `GraphNode` sub-graph (extractor → critic) run against any backend
 
 ## Common mistakes
 
