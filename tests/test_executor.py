@@ -279,6 +279,7 @@ async def test_graph_node_descends_into_subgraph(store):
         name="SubGraph",
         description="wraps inner",
         entry_node_id=inner_agent.node_id,
+        scope_outputs=False,  # legacy: leak inner outputs into parent
     )
     await store.upsert_node(graph_node)
 
@@ -287,6 +288,151 @@ async def test_graph_node_descends_into_subgraph(store):
     result = await executor._execute_node(graph_node, ctx)
     # Inner agent should have run and produced output
     assert inner_agent.node_id in ctx.outputs
+
+
+@pytest.mark.asyncio
+async def test_graph_node_returns_exit_node_output(store):
+    """The GraphNode result must be the exit node's output, not just the last hop."""
+    first = AgentNode(name="First", routing_table={"default": ""})
+    second = AgentNode(name="Second", routing_table={"default": "__END__"})
+    await store.upsert_node(first)
+    await store.upsert_node(second)
+    first.routing_table["default"] = second.node_id
+    await store.upsert_node(first)
+
+    sub = GraphNode(
+        name="Pipeline",
+        entry_node_id=first.node_id,
+        exit_node_id=first.node_id,  # explicitly the FIRST node, not the last
+    )
+    await store.upsert_node(sub)
+
+    executor = GraphExecutor(
+        store, backend=StubBackend([_end_turn("FIRST"), _end_turn("SECOND")])
+    )
+    ctx = ExecutionContext(query="test")
+    result = await executor._execute_node(sub, ctx)
+    assert isinstance(result, dict)
+    assert "FIRST" in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_graph_node_scopes_inner_outputs(store):
+    """With scope_outputs=True, inner node outputs do NOT leak into parent ctx.outputs."""
+    inner = AgentNode(name="Inner")
+    await store.upsert_node(inner)
+    sub = GraphNode(name="Sub", entry_node_id=inner.node_id, scope_outputs=True)
+    await store.upsert_node(sub)
+
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("hidden")]))
+    ctx = ExecutionContext(query="test")
+    await executor._execute_node(sub, ctx)
+    assert inner.node_id not in ctx.outputs
+
+
+@pytest.mark.asyncio
+async def test_graph_node_missing_entry_raises(store):
+    sub = GraphNode(name="Broken", entry_node_id="does-not-exist")
+    await store.upsert_node(sub)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("x")]))
+    ctx = ExecutionContext(query="test")
+    with pytest.raises(ValueError, match="not found in graph store"):
+        await executor._execute_node(sub, ctx)
+
+
+@pytest.mark.asyncio
+async def test_graph_node_no_entry_raises(store):
+    sub = GraphNode(name="NoEntry")
+    await store.upsert_node(sub)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("x")]))
+    ctx = ExecutionContext(query="test")
+    with pytest.raises(ValueError, match="no entry_node_id"):
+        await executor._execute_node(sub, ctx)
+
+
+@pytest.mark.asyncio
+async def test_graph_node_cycle_detected(store):
+    """A GraphNode whose sub-graph contains itself must raise, not loop forever."""
+    inner = AgentNode(name="Inner", routing_table={"default": "__END__"})
+    await store.upsert_node(inner)
+    # Build sub then patch entry to point at itself
+    sub = GraphNode(name="Cyclic", entry_node_id=inner.node_id)
+    await store.upsert_node(sub)
+
+    # Route inner -> sub so the sub-graph re-enters itself.
+    inner.routing_table = {"default": sub.node_id}
+    await store.upsert_node(inner)
+    # Make sub's entry point at itself (via inner) — inner will route into sub.
+    # When sub fires, inner runs, inner routes to sub (already active) → cycle.
+
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("loop")]))
+    ctx = ExecutionContext(query="test")
+    with pytest.raises(ValueError, match="cycle detected"):
+        await executor._execute_node(sub, ctx)
+
+
+@pytest.mark.asyncio
+async def test_graph_node_input_map_overlays_state(store):
+    """input_map aliases should appear under state.data inside the sub-graph."""
+    inner = AgentNode(name="Inner")
+    await store.upsert_node(inner)
+    sub = GraphNode(
+        name="WithInputs",
+        entry_node_id=inner.node_id,
+        input_map={"upstream_summary": "_last_output"},
+    )
+    await store.upsert_node(sub)
+
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("ok")]))
+    ctx = ExecutionContext(query="test")
+    ctx.state.data["_last_output"] = "PRIOR-RESULT"
+    await executor._execute_node(sub, ctx)
+    assert ctx.state.data.get("upstream_summary") == "PRIOR-RESULT"
+
+
+@pytest.mark.asyncio
+async def test_graph_node_execution_policy_retries(store):
+    """ExecutionPolicy retry_policy should retry a flaky sub-graph as a unit."""
+    inner = AgentNode(name="Inner")
+    await store.upsert_node(inner)
+
+    attempts = {"n": 0}
+
+    class FlakyBackend(LLMBackend):
+        async def chat(self, model, system, messages, tools, max_tokens=8096):
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                raise RuntimeError("transient")
+            return _end_turn("recovered")
+
+        def extend_messages(self, messages, response, tool_results):
+            return messages
+
+    sub = GraphNode(
+        name="Retried",
+        entry_node_id=inner.node_id,
+        execution_policy=ExecutionPolicy(retry_policy=RetryPolicy(max_attempts=3)),
+    )
+    await store.upsert_node(sub)
+    executor = GraphExecutor(store, backend=FlakyBackend())
+    ctx = ExecutionContext(query="test")
+    result = await executor._execute_node(sub, ctx)
+    assert attempts["n"] >= 2
+    assert isinstance(result, dict) and "recovered" in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_graph_app_add_subgraph_helper():
+    """GraphApp.add_subgraph should wire a reusable sub-graph via the high-level API."""
+    from yggdrasil_lm.app import GraphApp
+
+    app = GraphApp(backend=StubBackend([_end_turn("ok")]))
+    inner = await app.add_agent("Inner")
+    sub = await app.add_subgraph("MySub", entry=inner)
+    assert sub.entry_node_id == inner.node_id
+    assert sub.exit_node_id == ""
+    assert sub.strategy == "sequential"
+    assert sub.scope_outputs is True
 
 
 # ---------------------------------------------------------------------------

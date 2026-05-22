@@ -11,11 +11,11 @@ from typing import Any
 from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
 from yggdrasil_lm.core.edges import Edge
 from yggdrasil_lm.core.executor import GraphExecutor
-from yggdrasil_lm.core.nodes import AgentNode, ContextNode, PromptNode, ToolNode, TransformNode
+from yggdrasil_lm.core.nodes import AgentNode, ContextNode, GraphNode, PromptNode, ToolNode, TransformNode
 from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
 from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 
-NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | str
+NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | GraphNode | str
 END_NODE = "__END__"
 
 
@@ -94,6 +94,45 @@ def create_context(
 ) -> ContextNode:
     """Create a ContextNode."""
     return ContextNode(name=name, content=content, description=description, **kwargs)
+
+
+def create_subgraph(
+    name: str,
+    *,
+    entry: AgentNode | str,
+    exit: AgentNode | str | None = None,
+    description: str = "",
+    strategy: str = "sequential",
+    input_keys: list[str] | None = None,
+    input_map: dict[str, str] | None = None,
+    scope_outputs: bool = True,
+    **kwargs: Any,
+) -> GraphNode:
+    """Create a GraphNode that wraps a sub-graph as a single reusable step.
+
+    Args:
+        entry: AgentNode or node_id that the sub-graph starts from.
+        exit:  AgentNode or node_id whose output is the sub-graph's result.
+               Defaults to entry.
+        strategy: "sequential" | "parallel" | "topological".
+        input_keys: parent node_ids / state keys to thread into the sub-run
+            as its initial query.
+        input_map: {alias: source_key} pairs surfaced under state.data.
+        scope_outputs: keep inner outputs scoped (default) or merge into parent.
+    """
+    entry_id = entry if isinstance(entry, str) else entry.node_id
+    exit_id  = exit  if isinstance(exit, str)  else (exit.node_id if exit is not None else "")
+    return GraphNode(
+        name=name,
+        description=description,
+        entry_node_id=entry_id,
+        exit_node_id=exit_id,
+        strategy=strategy,
+        input_keys=input_keys or [],
+        input_map=input_map or {},
+        scope_outputs=scope_outputs,
+        **kwargs,
+    )
 
 
 def create_prompt(
@@ -225,6 +264,22 @@ class GraphApp:
         await self.store.upsert_node(ctx)
         return ctx
 
+    async def add_subgraph(
+        self,
+        name: str,
+        *,
+        entry: AgentNode | str,
+        exit: AgentNode | str | None = None,
+        **kwargs: Any,
+    ) -> GraphNode:
+        """Register a GraphNode that wraps a sub-graph as a single reusable step.
+
+        See ``create_subgraph`` for argument details.
+        """
+        node = create_subgraph(name, entry=entry, exit=exit, **kwargs)
+        await self.store.upsert_node(node)
+        return node
+
     async def add_prompt(self, name: str, template: str, **kwargs: Any) -> PromptNode:
         prompt = create_prompt(name, template, **kwargs)
         await self.store.upsert_node(prompt)
@@ -301,6 +356,59 @@ class GraphApp:
             **kwargs,
         )
 
+    async def run_subgraph(
+        self,
+        subgraph:  GraphNode | str,
+        *,
+        inputs:    dict[str, Any] | None = None,
+        query:     str | None            = None,
+        **kwargs:  Any,
+    ):
+        """Run a ``GraphNode`` in isolation — the testing / unit-of-work entry point.
+
+        Args:
+            subgraph: A ``GraphNode`` (or its node_id) to invoke directly.
+            inputs:   Dict merged into ``state.data`` before the sub-graph fires.
+                      Keys should match whatever the inner nodes (or the
+                      ``input_map`` source keys) read from state.
+            query:    Initial query string. If omitted, ``input_keys`` /
+                      ``input_map`` on the GraphNode drive the resolved query;
+                      otherwise a placeholder empty string is used.
+            **kwargs: Forwarded to ``executor.run`` (e.g. ``max_hops``, ``options``).
+
+        Returns:
+            The ``ExecutionContext`` from the run. The sub-graph's result lives
+            at ``ctx.outputs[subgraph.node_id]``.
+        """
+        state = dict(kwargs.pop("state", None) or {})
+        if inputs:
+            state.update(inputs)
+        return await self.executor.run(
+            entry_node_id=self._node_id(subgraph),
+            query=query if query is not None else "",
+            state=state or None,
+            **kwargs,
+        )
+
+    async def dry_run_subgraph(
+        self,
+        subgraph: GraphNode | str,
+        *,
+        inputs:   dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a sub-graph's wiring without executing — for fast smoke tests.
+
+        Returns the entry/exit ids, strategy, resolved query, and state overlay
+        the executor would use if you ran this sub-graph now. See
+        ``GraphExecutor.resolve_subgraph_inputs``.
+        """
+        from yggdrasil_lm.core.executor import ExecutionContext
+
+        ctx = ExecutionContext(query="")
+        if inputs:
+            ctx.state.data.update(inputs)
+        return await self.executor.resolve_subgraph_inputs(self._node_id(subgraph), ctx)
+
     def _node_id(self, node: NodeRef) -> str:
         if isinstance(node, str):
             return node
@@ -313,6 +421,7 @@ __all__ = [
     "create_context",
     "create_executor",
     "create_prompt",
+    "create_subgraph",
     "create_tool",
     "create_transform",
 ]

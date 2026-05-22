@@ -158,9 +158,35 @@ Use this when:
 
 ## 4. Reusable Sub-Graphs
 
-Wrap a multi-step workflow in a `GraphNode` when you want to reuse it as a single step inside a larger graph.
+Wrap a multi-step workflow in a `GraphNode` when you want to reuse it as a single step inside a larger graph. The sub-graph runs in a child execution context, so its intermediate outputs do not pollute the parent and the same `GraphNode` can be reused across many parent runs without collisions.
 
-Example:
+**High-level builder API** (recommended):
+
+```python
+from yggdrasil_lm.app import GraphApp
+
+async def review_pipeline_demo() -> None:
+    app = GraphApp()
+
+    extractor = await app.add_agent("Extractor", system_prompt="Emit one CLAIM line.")
+    critic    = await app.add_agent("Critic",    system_prompt="Reply VERDICT: SUPPORTABLE | HYPE.")
+    extractor.routing_table = {"default": critic.node_id}
+    await app.store.upsert_node(extractor)
+
+    review = await app.add_subgraph(
+        "ReviewPipeline",
+        entry=extractor,
+        exit=critic,                                 # surface critic's verdict only
+        input_map={"product_text": "current_product"},
+        strategy="sequential",                       # | "parallel" | "topological"
+    )
+
+    for text in PRODUCTS:
+        ctx = await app.run(review, query=text, state={"current_product": text})
+        print(ctx.outputs[review.node_id]["text"])   # critic's output, inner nodes scoped out
+```
+
+**Low-level API**:
 
 ```python
 async def nested_workflow() -> None:
@@ -176,7 +202,6 @@ async def nested_workflow() -> None:
         system_prompt="Find supporting information.",
         routing_table={"default": writer.node_id},
     )
-
     await store.upsert_node(researcher)
     await store.upsert_node(writer)
 
@@ -185,28 +210,40 @@ async def nested_workflow() -> None:
         description="A reusable sub-graph",
         entry_node_id=researcher.node_id,
         exit_node_id=writer.node_id,
+        strategy="sequential",
+        scope_outputs=True,           # default — keep inner outputs out of parent
     )
-    orchestrator = AgentNode(
-        name="Orchestrator",
-        system_prompt="Start the reusable workflow.",
-        routing_table={"default": reusable_pipeline.node_id},
-    )
-
     await store.upsert_node(reusable_pipeline)
-    await store.upsert_node(orchestrator)
 
     ctx = await GraphExecutor(store).run(
-        entry_node_id=orchestrator.node_id,
+        entry_node_id=reusable_pipeline.node_id,
         query="Research quantum computing.",
     )
-    print_trace(ctx)
+    print(ctx.outputs[reusable_pipeline.node_id])   # writer's output only
 ```
+
+**Key fields:**
+
+| Field | Purpose |
+|---|---|
+| `entry_node_id` | Node the sub-graph starts at. Raises if missing or unresolvable. |
+| `exit_node_id` | Node whose output becomes the sub-graph's result. Falls back to entry. |
+| `strategy` | `"sequential"` (default) / `"parallel"` / `"topological"`. Independent of parent strategy. |
+| `input_keys` | Parent `ctx.outputs` / `state.data` keys joined as the sub-graph's initial query. |
+| `input_map` | `{alias: source_key}` pairs exposed under the sub-graph's `state.data`. |
+| `scope_outputs` | Keep inner outputs scoped (default) or merge into parent (legacy). |
+| `execution_policy` | Retry / timeout the whole sub-run as a unit. |
+
+Cycles (a sub-graph that re-enters itself) and recursion depth (>16) are detected and raise `ValueError`. See `examples/subgraph_lmstudio.py` for a runnable demo that wraps an extractor → critic chain and reuses it across multiple parent inputs.
+
+**Testing sub-graphs hermetically.** Use `yggdrasil_lm.testing.StubBackend` plus `app.run_subgraph` / `app.dry_run_subgraph` to exercise sub-graphs without a real LLM — see `tests/test_subgraph_helpers.py` for the canonical patterns.
 
 Use this when:
 
 - a workflow should be reusable
 - you want one graph to embed another
 - you want to hide inner complexity behind one node
+- you want to retry a multi-step sub-flow as a single unit
 
 ## 5. Agent-To-Agent Data Passing
 

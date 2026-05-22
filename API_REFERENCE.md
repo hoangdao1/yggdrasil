@@ -903,45 +903,109 @@ for edge in edges:
 
 ### GraphNode
 
-Wraps an entire sub-graph behind a single node interface. When the executor encounters a `GraphNode`, it transparently descends into the sub-graph starting from `entry_node_id` and returns the output of `exit_node_id`.
+Wraps an entire sub-graph behind a single node interface. When the executor encounters a `GraphNode`, it transparently descends into the sub-graph starting from `entry_node_id`, traverses it under the chosen `strategy`, and surfaces only the `exit_node_id`'s output to the parent.
 
 ```python
 class GraphNode(Node):
-    node_type:     NodeType   # frozen = NodeType.GRAPH
-    entry_node_id: str        # default: ""
-    exit_node_id:  str        # default: ""
+    node_type:        NodeType        # frozen = NodeType.GRAPH
+    entry_node_id:    str             # node to start traversal from
+    exit_node_id:     str             # node whose output is returned (falls back to entry)
+    strategy:         str             = "sequential"  # | "parallel" | "topological"
+    input_keys:       list[str]       = []     # parent node_ids / state keys → sub-run query
+    input_map:        dict[str, str]  = {}     # {alias: source_key} → sub state.data
+    scope_outputs:    bool            = True   # keep inner outputs out of parent ctx.outputs
+    execution_policy: ExecutionPolicy = ...    # retry / timeout for the whole sub-run
 ```
 
-**Tutorial**
+**Semantics**
+
+- **`exit_node_id` is honored**: the value the parent receives is `child_ctx.outputs[exit_node_id]`, not "whatever the last hop produced." Falls back to `entry_node_id` when empty.
+- **Output scoping** (default `scope_outputs=True`): the sub-graph runs in a child `ExecutionContext` so its intermediate outputs do not leak into the parent's `ctx.outputs`. The same `GraphNode` can therefore be reused multiple times in one parent run without colliding. Set `scope_outputs=False` to restore the legacy merge-into-parent behavior.
+- **Inputs**: `input_keys` collects values from the parent's `ctx.outputs` / `state.data` and concatenates their text into the sub-graph's initial query. `input_map` exposes parent values to the sub-graph under aliases in `state.data`.
+- **Strategy**: the sub-graph can run sequentially, fan-out in parallel, or traverse a topological DAG independently of the parent's strategy.
+- **Errors**: a missing or unresolvable `entry_node_id` raises `ValueError`. Cycles (a sub-graph that re-enters itself) and depth overruns (>16) raise as well.
+- **Retries**: `execution_policy` retries / times out the entire sub-graph as a unit, the same way it does for `AgentNode` and `ToolNode`.
+
+**High-level builder API**
 
 ```python
-from yggdrasil import AgentNode, GraphNode, Edge, NetworkXGraphStore, GraphExecutor
+from yggdrasil_lm.app import GraphApp
+
+app = GraphApp()
+researcher  = await app.add_agent("Researcher",  system_prompt="...")
+synthesizer = await app.add_agent("Synthesizer", system_prompt="...")
+researcher.routing_table = {"default": synthesizer.node_id}
+await app.store.upsert_node(researcher)
+
+pipeline = await app.add_subgraph(
+    "ResearchPipeline",
+    entry=researcher,
+    exit=synthesizer,
+    input_map={"topic": "_last_output"},   # alias parent's last output as state.data["topic"]
+)
+
+ctx = await app.run(pipeline, "research Python 3.13")
+print(ctx.outputs[pipeline.node_id])   # synthesizer's output, scoped from inner nodes
+```
+
+**Low-level API**
+
+```python
+from yggdrasil_lm import AgentNode, GraphNode, Edge, NetworkXGraphStore, GraphExecutor
 
 store = NetworkXGraphStore()
 
 # Build the inner pipeline
-researcher  = AgentNode(name="Researcher",  routing_table={"default": synthesizer.node_id})
 synthesizer = AgentNode(name="Synthesizer", routing_table={"default": "__END__"})
+researcher  = AgentNode(name="Researcher",  routing_table={"default": synthesizer.node_id})
 await store.upsert_node(researcher)
 await store.upsert_node(synthesizer)
-await store.upsert_edge(Edge.delegates_to(researcher.node_id, synthesizer.node_id))
 
 # Expose the pipeline as a single reusable node
 pipeline = GraphNode(
     name="ResearchPipeline",
     entry_node_id=researcher.node_id,
     exit_node_id=synthesizer.node_id,
+    strategy="sequential",
+    scope_outputs=True,
 )
 await store.upsert_node(pipeline)
 
-# Another agent delegates to the whole pipeline as one step
-orchestrator = AgentNode(name="Orchestrator", routing_table={"default": pipeline.node_id})
-await store.upsert_node(orchestrator)
-await store.upsert_edge(Edge.delegates_to(orchestrator.node_id, pipeline.node_id))
-
-ctx = await GraphExecutor(store).run(orchestrator.node_id, "research Python 3.13")
-print(ctx.outputs[pipeline.node_id])   # synthesizer's output
+ctx = await GraphExecutor(store).run(pipeline.node_id, "research Python 3.13")
+print(ctx.outputs[pipeline.node_id])   # synthesizer's output only
 ```
+
+**Reusing the same sub-graph**
+
+Because inner outputs are scoped, you can run one `GraphNode` against many parent contexts without name collisions — see `examples/subgraph_lmstudio.py` for a working demo that runs the same `ReviewPipeline` sub-graph against multiple products via LM Studio.
+
+**Testing sub-graphs in isolation**
+
+```python
+from yggdrasil_lm.app import GraphApp
+from yggdrasil_lm.testing import StubBackend, end_turn, tool_use
+
+# Dry run — assert wiring without invoking an LLM
+info = await app.dry_run_subgraph(sub, inputs={"raw": "value"})
+# {"entry_node_id": ..., "exit_node_id": ..., "strategy": ...,
+#  "scope_outputs": True, "query": "...", "state_overlay": {"alias": "value"}}
+
+# Replay — drive the sub-graph with canned responses
+backend = StubBackend([end_turn("CLAIM: fast"), end_turn("VERDICT: HYPE")])
+app = GraphApp(backend=backend)
+ctx = await app.run_subgraph(sub, inputs={"product": "..."}, query="review")
+assert "HYPE" in ctx.outputs[sub.node_id]["text"]
+assert len(backend.calls) == 2
+```
+
+| Helper | Purpose |
+|---|---|
+| `GraphApp.run_subgraph(sub, *, inputs, query, **kw)` | Run a `GraphNode` as the top-level entry. `inputs` is merged into `state.data` before execution. |
+| `GraphApp.dry_run_subgraph(sub, *, inputs)` | Resolve query / state overlay / entry+exit ids without executing. |
+| `GraphExecutor.resolve_subgraph_inputs(node, ctx)` | Lower-level form of `dry_run_subgraph` — pass an explicit context. |
+| `yggdrasil_lm.testing.StubBackend(responses)` | Deterministic backend; `responses` is a list (returns in order, loops) or callable. Exposes `.calls`. |
+| `yggdrasil_lm.testing.end_turn(text)` | Build an end-of-turn `LLMResponse`. |
+| `yggdrasil_lm.testing.tool_use(id, name, input)` | Build a tool-call `LLMResponse`. |
 
 ---
 

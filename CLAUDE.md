@@ -76,6 +76,7 @@ agent  = await app.add_agent("Name", system_prompt="...", model="claude-sonnet-4
 tool   = await app.add_tool("name", callable_ref="module.func", description="...", input_schema={...})
 ctx_n  = await app.add_context("Name", content="...", description="...")
 prompt = await app.add_prompt("Name", template="...", description="...")
+sub    = await app.add_subgraph("Pipeline", entry=first_agent, exit=last_agent)
 
 await app.connect_tool(agent, tool)        # HAS_TOOL edge
 await app.connect_context(agent, ctx_n)    # HAS_CONTEXT edge
@@ -87,6 +88,50 @@ app.use_default_tools()   # registers built-in web_search, echo, run_python call
 ctx = await app.run(agent, "query")
 print(ctx.outputs[agent.node_id]["text"])  # final text output
 ```
+
+## Reusable sub-graphs (GraphNode)
+
+Wrap a chain of nodes behind a single `GraphNode` so it can be reused across parents. The sub-graph runs in a child context — inner outputs do not leak into the parent.
+
+```python
+sub = await app.add_subgraph(
+    "ReviewPipeline",
+    entry=extractor,                            # AgentNode or node_id
+    exit=critic,                                # output the parent sees (defaults to entry)
+    strategy="sequential",                      # | "parallel" | "topological"
+    input_map={"product_text": "current_product"},  # parent state → sub-graph state.data
+    scope_outputs=True,                         # default — keep inner outputs scoped
+)
+ctx = await app.run(sub, query="...", state={"current_product": "..."})
+ctx.outputs[sub.node_id]["text"]                # exit node's output
+```
+
+Errors: a missing `entry_node_id` raises; cycles and recursion depth >16 raise. The whole sub-run can be retried via `execution_policy`.
+
+### Testing sub-graphs hermetically
+
+`yggdrasil_lm.testing` exposes a `StubBackend` plus `end_turn()` / `tool_use()` helpers — pre-recorded responses, zero network. The `GraphApp` exposes two test-friendly entry points:
+
+```python
+from yggdrasil_lm.app import GraphApp
+from yggdrasil_lm.testing import StubBackend, end_turn
+
+# Dry run: assert wiring (input_map, exit_node_id) without invoking an LLM.
+info = await app.dry_run_subgraph(sub, inputs={"raw": "hi"})
+assert info["state_overlay"] == {"alias": "hi"}
+assert info["exit_node_id"] == critic.node_id
+
+# Replay: run the sub-graph in isolation with canned LLM responses.
+backend = StubBackend([end_turn("CLAIM: fast"), end_turn("VERDICT: HYPE")])
+app = GraphApp(backend=backend)
+ctx = await app.run_subgraph(sub, inputs={"product": "..."}, query="review")
+assert "HYPE" in ctx.outputs[sub.node_id]["text"]
+assert len(backend.calls) == 2   # backend records each chat() call
+```
+
+- `app.run_subgraph(sub, inputs=..., query=..., **run_kwargs)` — runs a `GraphNode` as the top-level entry; `inputs` are merged into `state.data`.
+- `app.dry_run_subgraph(sub, inputs=...)` — resolves entry/exit/strategy/query/state-overlay without firing the executor.
+- `StubBackend(responses)` — `responses` is a list (returned in order, loops when exhausted) or a callable `(model, system, messages, tools) -> LLMResponse`. The `.calls` attribute records every invocation.
 
 ## Multi-agent routing
 
@@ -131,6 +176,7 @@ These are all runnable and tested — read before building:
 - `examples/parallel_workers.py` — fan-out execution
 - `examples/approval_workflow.py` — human-in-the-loop / ApprovalNode
 - `examples/research_pipeline.py` — full low-level API with routing
+- `examples/subgraph_lmstudio.py` — reusable `GraphNode` sub-graph via LM Studio
 
 ## Common mistakes
 
