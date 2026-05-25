@@ -133,6 +133,40 @@ assert len(backend.calls) == 2   # backend records each chat() call
 - `app.dry_run_subgraph(sub, inputs=...)` — resolves entry/exit/strategy/query/state-overlay without firing the executor.
 - `StubBackend(responses)` — `responses` is a list (returned in order, loops when exhausted) or a callable `(model, system, messages, tools) -> LLMResponse`. The `.calls` attribute records every invocation.
 
+### Record once against a real LLM, replay forever
+
+`RecordingBackend` wraps any real backend and writes each `chat()` call to a JSON fixture; `StubBackend.from_recording(path)` replays the fixture deterministically with no network.
+
+```python
+from yggdrasil_lm.app import GraphApp
+from yggdrasil_lm.backends.llm import AnthropicBackend
+from yggdrasil_lm.testing import RecordingBackend, StubBackend
+
+# First run — hits the real API, writes the fixture
+app = GraphApp(backend=RecordingBackend(AnthropicBackend(), "tests/fixtures/critic.json"))
+ctx = await app.run(agent, "review this product")
+
+# Subsequent runs — fully offline, byte-identical
+app = GraphApp(backend=StubBackend.from_recording("tests/fixtures/critic.json"))
+```
+
+Recordings are coupled to prompt text — change the system prompt or model and you must re-record (delete the fixture, run again with the real backend wired up).
+
+### Gating live-LLM tests
+
+`tests/conftest.py` registers a `live_llm` marker. Tests marked with it are skipped by default; set `YGG_LIVE_LLM=1` to run them.
+
+```python
+@pytest.mark.live_llm
+async def test_critic_flags_hype():
+    app = GraphApp()  # real backend
+    ...
+```
+
+```bash
+YGG_LIVE_LLM=1 pytest -m live_llm
+```
+
 ## Multi-agent routing
 
 Route by keywords in the LLM's response. `"__END__"` terminates execution.
