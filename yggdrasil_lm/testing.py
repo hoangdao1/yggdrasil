@@ -16,10 +16,16 @@ sub = await app.add_subgraph("Pipeline", entry=extractor, exit=critic)
 ctx = await app.run_subgraph(sub, inputs={"product": "..."})
 assert "HYPE" in ctx.outputs[sub.node_id]["text"]
 ```
+
+For tests that need to validate against real LLM behaviour once and then
+replay deterministically, see ``RecordingBackend`` below.
 """
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall, ToolResult
@@ -27,6 +33,7 @@ from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall, ToolRes
 
 __all__ = [
     "StubBackend",
+    "RecordingBackend",
     "end_turn",
     "tool_use",
 ]
@@ -100,3 +107,97 @@ class StubBackend(LLMBackend):
         for tr in tool_results:
             continuation.append({"role": "tool", "content": tr.content})
         return list(messages) + continuation
+
+    @classmethod
+    def from_recording(cls, path: str | Path) -> "StubBackend":
+        """Load a fixture written by ``RecordingBackend`` and replay it in order.
+
+        The recorded ``LLMResponse`` objects are reconstructed (without the
+        backend-specific ``_raw`` field, which is not serialised).
+        """
+        data = json.loads(Path(path).read_text())
+        responses = [_response_from_dict(entry["response"]) for entry in data]
+        return cls(responses)
+
+
+# ---------------------------------------------------------------------------
+# Recording backend
+# ---------------------------------------------------------------------------
+
+def _response_to_dict(resp: LLMResponse) -> dict[str, Any]:
+    return {
+        "text":        resp.text,
+        "tool_calls":  [asdict(tc) for tc in resp.tool_calls],
+        "stop_reason": resp.stop_reason,
+    }
+
+
+def _response_from_dict(data: dict[str, Any]) -> LLMResponse:
+    return LLMResponse(
+        text=data["text"],
+        tool_calls=[ToolCall(**tc) for tc in data.get("tool_calls", [])],
+        stop_reason=data["stop_reason"],
+    )
+
+
+class RecordingBackend(LLMBackend):
+    """Wraps a real LLM backend and persists each ``chat`` call to a JSON file.
+
+    First test run hits the wrapped backend (real API) and writes a fixture;
+    subsequent runs can replay deterministically via
+    ``StubBackend.from_recording(path)`` — no network, no cost.
+
+    Args:
+        inner: The real backend to delegate to (e.g. ``AnthropicBackend()``).
+        path: Where to write the recording. The file is created (or
+            overwritten) on the first ``chat`` call and appended to on each
+            subsequent call within the same process.
+
+    Example:
+        >>> # First run — populates the fixture
+        >>> backend = RecordingBackend(AnthropicBackend(), "tests/fixtures/critic.json")
+        >>> app = GraphApp(backend=backend)
+        >>> ctx = await app.run(agent, "review this product")
+        >>>
+        >>> # Subsequent runs — fully offline
+        >>> backend = StubBackend.from_recording("tests/fixtures/critic.json")
+    """
+
+    def __init__(self, inner: LLMBackend, path: str | Path) -> None:
+        self._inner = inner
+        self._path  = Path(path)
+        self._entries: list[dict[str, Any]] = []
+        self._started = False
+
+    async def chat(
+        self,
+        model:      str,
+        system:     str,
+        messages:   list[dict[str, Any]],
+        tools:      list[dict[str, Any]],
+        max_tokens: int = 8096,
+    ) -> LLMResponse:
+        response = await self._inner.chat(model, system, messages, tools, max_tokens)
+        self._entries.append({
+            "request": {
+                "model":    model,
+                "system":   system,
+                "messages": messages,
+                "tools":    tools,
+            },
+            "response": _response_to_dict(response),
+        })
+        self._flush()
+        return response
+
+    def extend_messages(
+        self,
+        messages:     list[dict[str, Any]],
+        response:     LLMResponse,
+        tool_results: list[ToolResult],
+    ) -> list[dict[str, Any]]:
+        return self._inner.extend_messages(messages, response, tool_results)
+
+    def _flush(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(json.dumps(self._entries, indent=2, default=str))
