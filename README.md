@@ -227,6 +227,7 @@ Use this when you need direct control:
 - structured traces with terminal and browser views
 - typed run explanations with hop summaries, routing decisions, and tool call details
 - workflow runtime features such as pause/resume, approvals, and checkpoints
+- multimodal image queries and visual RAG (Anthropic and OpenAI-compatible backends)
 
 For the browser trace viewer specifically, see [Visualizer Web UI](docs/visualizer-web-ui.md).
 
@@ -248,6 +249,7 @@ For the browser trace viewer specifically, see [Visualizer Web UI](docs/visualiz
 - [examples/approval_workflow.py](examples/approval_workflow.py)
 - [examples/parallel_workers.py](examples/parallel_workers.py)
 - [examples/research_pipeline.py](examples/research_pipeline.py)
+- [examples/image_query_and_visual_rag.py](examples/image_query_and_visual_rag.py)
 
 ### Learn provider setup
 

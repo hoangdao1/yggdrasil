@@ -208,9 +208,22 @@ class GraphApp:
     async def connect_prompt(agent, prompt, **kwargs) -> Edge
     async def delegate(src_agent, dst_agent, **kwargs) -> Edge
 
+    async def add_image_context(
+        name: str,
+        *,
+        url: str | None = None,        # provide exactly one of url / path / data
+        path: str | Path | None = None,
+        data: str | None = None,       # pre-encoded base64 string
+        media_type: str | None = None, # auto-detected from path extension when omitted
+        description: str = "",
+        **kwargs,
+    ) -> ContextNode
+    # Create an image ContextNode for visual RAG. Image is injected as a content
+    # block in the user message, not as text in the system prompt.
+
     async def run(
         entry_node: AgentNode | str,
-        query: str,
+        query: str | list[dict],       # plain string or multimodal content blocks
         *,
         strategy: str = "sequential",
         **kwargs,
@@ -748,13 +761,13 @@ async def example():
 
 ### ContextNode
 
-A passive knowledge or memory chunk injected into an agent's system prompt. Supports **bi-temporal modelling** with two independent timestamp pairs.
+A passive knowledge or memory chunk. Text context nodes are injected into an agent's system prompt; image context nodes are injected as multimodal content blocks in the user message (visual RAG). Supports **bi-temporal modelling** with two independent timestamp pairs.
 
 ```python
 class ContextNode(Node):
     node_type:       NodeType          # frozen = NodeType.CONTEXT
     content:         str               # default: ""
-    content_type:    str               # default: "text"  ("text"|"json"|"code"|"image_uri")
+    content_type:    str               # default: "text"  ("text"|"json"|"code"|"image")
     source:          str               # default: ""
     token_count:     int               # default: 0
     tags:            list[str]         # default: []
@@ -762,6 +775,13 @@ class ContextNode(Node):
     fact_valid_at:   datetime | None   # default: None
     fact_invalid_at: datetime | None   # default: None
 ```
+
+**Image context nodes** (`content_type="image"`) store either a URL or base64-encoded image data and are surfaced as inline image blocks in the user message — the only place LLMs can see images. Use `GraphApp.add_image_context()` to create them rather than constructing `ContextNode` directly.
+
+| `attributes["image_source"]` | `content` holds | `attributes["media_type"]` |
+|---|---|---|
+| `"url"` | Image URL | — |
+| `"base64"` | Base64-encoded bytes | MIME type, e.g. `"image/png"` |
 
 **Bi-temporal fields**
 
@@ -2620,7 +2640,113 @@ ctx = await GraphExecutor(store, embedder=embedder).run(best.node_id, "run my te
 
 ---
 
-## 13. Tool Registry
+## 13. Images and Visual RAG
+
+---
+
+### `yggdrasil_lm.media` — helper functions
+
+```python
+from yggdrasil_lm.media import image_from_file, image_from_url, image_from_base64, build_query
+```
+
+All functions produce **Anthropic-format content blocks**. The OpenAI-compatible backend converts them automatically via `_anthropic_to_openai_content`.
+
+#### `image_from_file`
+
+```python
+def image_from_file(path: str | Path, *, media_type: str | None = None) -> dict
+```
+
+Reads a local file and returns a base64-encoded image block. MIME type is auto-detected from the file extension (`.jpg`→`image/jpeg`, `.png`→`image/png`, `.gif`→`image/gif`, `.webp`→`image/webp`). Falls back to `mimetypes.guess_type`, then `"image/jpeg"`.
+
+#### `image_from_url`
+
+```python
+def image_from_url(url: str) -> dict
+```
+
+Returns a URL-referenced image block. The LLM fetches the image at inference time — the URL must be publicly accessible.
+
+#### `image_from_base64`
+
+```python
+def image_from_base64(data: str, media_type: str = "image/jpeg") -> dict
+```
+
+Builds an image block from a pre-encoded base64 string (no `data:` URI prefix).
+
+#### `build_query`
+
+```python
+def build_query(text: str, *images: dict) -> str | list[dict]
+```
+
+Combines a text prompt with one or more image blocks into a `QueryContent` value. Returns a plain `str` when called with no images; otherwise returns a list of content blocks with the text first. Pass the result directly to `app.run()`.
+
+```python
+query = build_query(
+    "Compare these two diagrams.",
+    image_from_file("before.png"),
+    image_from_file("after.png"),
+)
+ctx = await app.run(agent, query)
+```
+
+---
+
+### `GraphApp.add_image_context`
+
+```python
+async def add_image_context(
+    name: str,
+    *,
+    url: str | None = None,
+    path: str | Path | None = None,
+    data: str | None = None,
+    media_type: str | None = None,
+    description: str = "",
+    **kwargs,
+) -> ContextNode
+```
+
+Creates a `ContextNode` with `content_type="image"` for visual RAG. Provide exactly one of `url`, `path`, or `data`.
+
+| Arg | Description |
+|---|---|
+| `url` | Publicly accessible image URL |
+| `path` | Local file path — base64-encoded at call time, MIME type auto-detected |
+| `data` | Pre-encoded base64 string |
+| `media_type` | MIME type override. Defaults to extension detection (for `path`) or `"image/jpeg"` |
+
+Connect the returned node with `app.connect_context(agent, node)`. From that point the image is automatically merged into the user message on every `app.run()` call.
+
+```python
+# URL-based (no local file needed)
+photo = await app.add_image_context("Product photo", url="https://cdn.example.com/p.jpg")
+
+# Local file (read + base64-encoded once at node creation time)
+diagram = await app.add_image_context("Architecture", path="arch.png")
+
+await app.connect_context(agent, photo)
+await app.connect_context(agent, diagram)
+ctx = await app.run(agent, "Describe the product and its architecture.")
+```
+
+---
+
+### How image context is injected
+
+| Context type | Injected into |
+|---|---|
+| `content_type != "image"` (text, json, code) | System prompt — `## Relevant Context` block |
+| `content_type == "image"` | User message — as Anthropic image content blocks |
+
+Multiple image context nodes are all appended to the user message. If the query itself is also multimodal (a list from `build_query`), the context images are appended after the inline images.
+
+---
+
+## 14. Tool Registry
 
 ---
 
@@ -2747,7 +2873,7 @@ async def echo(input: dict) -> str
 
 ---
 
-## 14. End-to-End Tutorial
+## 15. End-to-End Tutorial
 
 Putting it all together: a two-agent research pipeline with semantic entry-point discovery.
 
@@ -2840,7 +2966,7 @@ asyncio.run(main())
 
 ---
 
-## 15. Claude Code Backend
+## 16. Claude Code Backend
 
 `ClaudeCodeExecutor` is a `GraphExecutor` subclass that drives each `AgentNode` as a full autonomous Claude Code sub-agent via the [`claude-agent-sdk`](https://pypi.org/project/claude-agent-sdk/). All graph traversal, routing, context composition, and `ToolNode` bridging work identically to `GraphExecutor` — only `_execute_agent` is replaced.
 
@@ -3035,7 +3161,7 @@ executor = ClaudeCodeExecutor(
 
 ---
 
-## 16. OpenTelemetry Exporter
+## 17. OpenTelemetry Exporter
 
 Converts an `ExecutionContext` trace into [OpenTelemetry](https://opentelemetry.io/) spans and exports them to any OTLP-compatible backend (Datadog, Signoz, Grafana Tempo, Honeycomb, Jaeger, …).
 
@@ -3190,7 +3316,7 @@ export_trace(ctx, tracer=my_tracer)
 
 ---
 
-## 17. Trace Visualizer
+## 18. Trace Visualizer
 
 The trace visualizer opens a browser tab showing a live or post-run view of an execution trace. It requires no sign-up, cloud account, or API key.
 

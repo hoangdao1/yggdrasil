@@ -36,6 +36,14 @@ from yggdrasil_lm.core.executor import (
 )
 from yggdrasil_lm.observability import RunExplanation, explain_run
 from yggdrasil_lm.trace_ui import inspect_trace
+from yggdrasil_lm.media import (
+    ImageBlock,
+    QueryContent,
+    image_from_file,
+    image_from_url,
+    image_from_base64,
+    build_query,
+)
 
 __all__ = [
     "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_tool", "create_transform",
@@ -49,4 +57,7 @@ __all__ = [
     "GraphExecutor", "ExecutionContext", "ExecutionOptions", "TraceEvent",
     "explain_run", "RunExplanation",
     "print_trace", "inspect_trace",
+    # Multimodal / image helpers
+    "ImageBlock", "QueryContent",
+    "image_from_file", "image_from_url", "image_from_base64", "build_query",
 ]
