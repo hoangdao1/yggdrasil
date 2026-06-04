@@ -6,11 +6,14 @@ task-oriented surface for first-time users and code-generation tools.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
 from yggdrasil_lm.core.edges import Edge
-from yggdrasil_lm.core.executor import GraphExecutor
+from yggdrasil_lm.core.executor import GraphExecutor, QueryContent
 from yggdrasil_lm.core.nodes import AgentNode, ContextNode, GraphNode, PromptNode, ToolNode, TransformNode
 from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
 from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
@@ -264,6 +267,84 @@ class GraphApp:
         await self.store.upsert_node(ctx)
         return ctx
 
+    async def add_image_context(
+        self,
+        name: str,
+        *,
+        url: str | None = None,
+        path: str | Path | None = None,
+        data: str | None = None,
+        media_type: str | None = None,
+        description: str = "",
+        **kwargs: Any,
+    ) -> ContextNode:
+        """Create an image ContextNode for visual RAG.
+
+        Provide exactly one of ``url``, ``path``, or ``data``.
+
+        Args:
+            name:        Human-readable label shown in traces.
+            url:         Publicly accessible image URL.
+            path:        Local file path — the image is base64-encoded at call time.
+            data:        Pre-encoded base64 string (no ``data:`` URI prefix).
+            media_type:  MIME type (e.g. ``"image/png"``). Auto-detected from
+                         ``path`` when omitted; defaults to ``"image/jpeg"``.
+            description: Optional description stored on the node.
+
+        Returns:
+            A :class:`ContextNode` with ``content_type="image"`` wired for
+            visual RAG.  Connect it to an agent with
+            ``await app.connect_context(agent, ctx_node)``.
+
+        Example::
+
+            photo = await app.add_image_context("Product photo", url="https://cdn.example.com/p.jpg")
+            await app.connect_context(agent, photo)
+            ctx = await app.run(agent, "Describe this product.")
+        """
+        sources = [s for s in (url, path, data) if s is not None]
+        if len(sources) != 1:
+            raise ValueError("Provide exactly one of: url=, path=, or data=")
+
+        if url is not None:
+            node = ContextNode(
+                name=name,
+                description=description,
+                content=url,
+                content_type="image",
+                attributes={"image_source": "url"},
+                **kwargs,
+            )
+        else:
+            if path is not None:
+                file_path = Path(path)
+                if media_type is None:
+                    _suffix_map = {
+                        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+                    }
+                    media_type = _suffix_map.get(file_path.suffix.lower())
+                    if media_type is None:
+                        guessed, _ = mimetypes.guess_type(str(file_path))
+                        media_type = guessed or "image/jpeg"
+                raw_data = base64.standard_b64encode(file_path.read_bytes()).decode()
+            else:
+                raw_data = data  # type: ignore[assignment]
+                if media_type is None:
+                    media_type = "image/jpeg"
+
+            node = ContextNode(
+                name=name,
+                description=description,
+                content=raw_data,
+                content_type="image",
+                attributes={"image_source": "base64", "media_type": media_type},
+                **kwargs,
+            )
+
+        await self.store.upsert_node(node)
+        return node
+
     async def add_subgraph(
         self,
         name: str,
@@ -344,7 +425,7 @@ class GraphApp:
     async def run(
         self,
         entry_node: AgentNode | str,
-        query: str,
+        query: QueryContent,
         *,
         strategy: str = "sequential",
         **kwargs: Any,

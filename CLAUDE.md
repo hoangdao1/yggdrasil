@@ -89,6 +89,49 @@ ctx = await app.run(agent, "query")
 print(ctx.outputs[agent.node_id]["text"])  # final text output
 ```
 
+## Images and visual RAG
+
+### Inline image query
+
+Pass an image alongside the text question using `build_query` from `yggdrasil_lm.media`:
+
+```python
+from yggdrasil_lm.media import build_query, image_from_file, image_from_url, image_from_base64
+
+# From a URL
+query = build_query("What's in this image?", image_from_url("https://example.com/photo.jpg"))
+
+# From a local file (auto-detects MIME type from extension)
+query = build_query("Describe this diagram.", image_from_file("diagram.png"))
+
+# From pre-encoded base64
+query = build_query("Analyse this chart.", image_from_base64(b64_str, "image/png"))
+
+ctx = await app.run(agent, query)
+```
+
+Multiple images are supported — pass them as additional arguments to `build_query`.
+
+### Visual RAG — persistent image context
+
+Attach an image `ContextNode` to an agent so it is included automatically on every call:
+
+```python
+# URL-based
+photo = await app.add_image_context("Product photo", url="https://cdn.example.com/p.jpg")
+
+# Local file
+diagram = await app.add_image_context("Architecture diagram", path="arch.png")
+
+# Pre-encoded base64
+chart = await app.add_image_context("Chart", data=b64_str, media_type="image/png")
+
+await app.connect_context(agent, photo)
+ctx = await app.run(agent, "Describe this product.")   # image injected automatically
+```
+
+Image context nodes are injected as content blocks in the **user message**, not the system prompt. Text context nodes continue to go into the system prompt.
+
 ## Reusable sub-graphs (GraphNode)
 
 Wrap a chain of nodes behind a single `GraphNode` so it can be reused across parents. The sub-graph runs in a child context — inner outputs do not leak into the parent.
@@ -211,6 +254,7 @@ These are all runnable and tested — read before building:
 - `examples/approval_workflow.py` — human-in-the-loop / ApprovalNode
 - `examples/research_pipeline.py` — full low-level API with routing
 - `examples/subgraph_reuse.py` — reusable `GraphNode` sub-graph (extractor → critic) run against any backend
+- `examples/image_query_and_visual_rag.py` — inline image query and persistent visual RAG
 
 ## Common mistakes
 

@@ -695,7 +695,11 @@ class ComposedAgent:
     delegates:  list[AgentNode]
 
     def build_system_prompt(self, **prompt_vars: Any) -> str:
-        """Assemble the system prompt from the prompt template + context nodes."""
+        """Assemble the system prompt from the prompt template + context nodes.
+
+        Image context nodes (content_type == "image") are excluded here — they
+        are injected as multimodal content blocks in the user message instead.
+        """
         parts: list[str] = []
 
         if self.prompt:
@@ -703,15 +707,45 @@ class ComposedAgent:
         elif self.agent_node.system_prompt:
             parts.append(self.agent_node.system_prompt)
 
-        if self.context:
+        text_context = [ctx for ctx in self.context if ctx.content_type != "image"]
+        if text_context:
             parts.append("\n\n## Relevant Context\n")
-            for ctx in self.context:
+            for ctx in text_context:
                 header = f"### {ctx.name}" if ctx.name else "###"
                 if ctx.source:
                     header += f" (source: {ctx.source})"
                 parts.append(f"{header}\n{ctx.content}")
 
         return "\n".join(parts)
+
+    def build_image_context_blocks(self) -> list[dict[str, Any]]:
+        """Return Anthropic-format image blocks for image context nodes.
+
+        ContextNodes with ``content_type == "image"`` are surfaced as inline
+        image blocks in the user message (visual RAG) rather than as text in
+        the system prompt.  Each such node stores either a URL or base64 data:
+
+        - ``attributes["image_source"] == "url"``  → ``content`` is a URL.
+        - ``attributes["image_source"] == "base64"`` → ``content`` is base64
+          data; ``attributes["media_type"]`` provides the MIME type.
+        """
+        blocks: list[dict[str, Any]] = []
+        for ctx in self.context:
+            if ctx.content_type != "image":
+                continue
+            source_type = ctx.attributes.get("image_source", "url")
+            if source_type == "base64":
+                media_type = ctx.attributes.get("media_type", "image/jpeg")
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": ctx.content},
+                })
+            else:
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "url", "url": ctx.content},
+                })
+        return blocks
 
     def build_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool definitions for all composed tools (backend-agnostic format)."""
@@ -2021,7 +2055,17 @@ class GraphExecutor:
                 "role": "assistant",
                 "content": f"Workflow state:\n{json.dumps(ctx.state.data, sort_keys=True, default=str)}",
             })
-        messages.append({"role": "user", "content": ctx.query})
+
+        # Merge query content with any image context nodes (visual RAG).
+        image_ctx_blocks = composed.build_image_context_blocks()
+        if image_ctx_blocks:
+            if isinstance(ctx.query, list):
+                user_content: QueryContent = list(ctx.query) + image_ctx_blocks
+            else:
+                user_content = [{"type": "text", "text": ctx.query}] + image_ctx_blocks
+        else:
+            user_content = ctx.query
+        messages.append({"role": "user", "content": user_content})
 
         last_response = None
         iterations = 0
