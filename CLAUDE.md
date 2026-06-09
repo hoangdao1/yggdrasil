@@ -210,6 +210,74 @@ async def test_critic_flags_hype():
 YGG_LIVE_LLM=1 pytest -m live_llm
 ```
 
+## Neurosymbolic reasoning (ReasonerNode + Datalog)
+
+Yggdrasil pairs the **neural** half (`AgentNode` — an LLM) with a **symbolic**
+half: a built-in, dependency-free Datalog engine exposed as a `ReasonerNode`.
+The agent handles language; the reasoner makes the *decision* soundly,
+deterministically, and with a proof — so the verdict can't be hallucinated.
+
+### The Datalog engine (standalone)
+
+```python
+from yggdrasil_lm.symbolic import Program, fact
+
+prog = Program.parse("""
+    adult(?p)      :- age(?p, ?a), ?a >= 18.       # comparison built-ins
+    minor(?p)      :- person(?p), not adult(?p).   # stratified negation
+    ancestor(?x,?z):- parent(?x,?y), ancestor(?y,?z).  # recursion
+""")
+sol = prog.solve([fact("person", "eve"), fact("age", "eve", 12)], with_proof=True)
+sol.query("minor")          # [('minor', 'eve')]
+sol.explain(("minor","eve"))  # one-line justification
+```
+
+Syntax: variables are `?x`; constants are `"quoted"`, numbers, `true`/`false`,
+or bare words. Rules are `head :- body1, body2.` (facts have empty bodies).
+Unsafe rules (unbound head/negation vars) and recursion-through-negation are
+rejected at compile time.
+
+### ReasonerNode in a graph
+
+```python
+reasoner = await app.add_reasoner(
+    "EligibilityReasoner",
+    program="""
+        adult(?p)      :- age(?p, ?a), ?a >= 18.
+        sufficient(?p) :- income(?p, ?i), ?i >= 30000.
+        eligible(?p)   :- applicant(?p), adult(?p), sufficient(?p).
+    """,
+    state_keys=["facts"],          # facts an upstream agent extracted into state
+    edge_types=["MENTIONS"],       # AND/OR knowledge-graph edges as binary facts
+    query=["eligible"],            # predicates to surface (empty = all derived)
+    with_proof=True,               # attach a justification per derived fact
+    output_key="inferred",         # also written to ctx.state.data["inferred"]
+)
+ctx = await app.run(reasoner, "decide", state={"facts": [["applicant","dana"], ["age","dana",34], ["income","dana",48000]]})
+ctx.outputs[reasoner.node_id]["facts"]    # [{"predicate":"eligible","args":["dana"]}]
+ctx.outputs[reasoner.node_id]["proofs"]   # human-readable derivations
+```
+
+Facts come from `state_keys` (lists of tuples / `{"predicate","args"}` dicts /
+`["pred",...]` lists / atom-syntax strings) and/or from the knowledge graph:
+`edge_types=["MENTIONS"]` loads every `MENTIONS` edge as `mentions(src, dst)`,
+turning the typed graph into a logic fact base. No LLM is called.
+
+### Querying the KG as a fact base from an agent
+
+`app.use_default_tools()` also registers read-only KG-query tools an agent can
+call: `tools.kg_query.neighbors`, `tools.kg_query.reachable`, and
+`tools.kg_query.facts` (dumps edges/nodes as ground facts). They receive the
+live store via `store` keyword injection.
+
+### Canonical pattern: extract → reason → explain
+
+Neural extraction → symbolic decision (with proof) → neural explanation. See
+`examples/neurosymbolic_pipeline.py` (runs offline with `StubBackend`).
+
+Deep dive (lifecycle, the DSL, and why Datalog over a plain Python function):
+`docs/neurosymbolic-reasoning.md`.
+
 ## Multi-agent routing
 
 Route by keywords in the LLM's response. `"__END__"` terminates execution.
@@ -255,6 +323,7 @@ These are all runnable and tested — read before building:
 - `examples/research_pipeline.py` — full low-level API with routing
 - `examples/subgraph_reuse.py` — reusable `GraphNode` sub-graph (extractor → critic) run against any backend
 - `examples/image_query_and_visual_rag.py` — inline image query and persistent visual RAG
+- `examples/neurosymbolic_pipeline.py` — neural extraction → symbolic Datalog reasoning (with proof) → neural explanation
 
 ## Common mistakes
 

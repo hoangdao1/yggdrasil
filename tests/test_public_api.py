@@ -85,6 +85,6 @@ def test_canonical_import_viz():
 def test_top_level_namespace_re_exports_all_layers():
     """yggdrasil top-level re-exports functions from all three layers for convenience."""
     import yggdrasil_lm
-    assert hasattr(yggdrasil, "inspect_trace")
-    assert hasattr(yggdrasil, "print_trace")
-    assert hasattr(yggdrasil, "explain_run")
+    assert hasattr(yggdrasil_lm, "inspect_trace")
+    assert hasattr(yggdrasil_lm, "print_trace")
+    assert hasattr(yggdrasil_lm, "explain_run")

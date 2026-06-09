@@ -9,6 +9,7 @@ from yggdrasil_lm.app import (
     create_context,
     create_executor,
     create_prompt,
+    create_reasoner,
     create_tool,
     create_transform,
 )
@@ -19,12 +20,15 @@ from yggdrasil_lm.core.nodes import (
     ApprovalNode,
     ContextNode,
     ExecutionPolicy,
+    FactSource,
     GraphNode,
+    ReasonerNode,
     RetryPolicy,
     RouteRule,
     ToolNode,
     TransformNode,
 )
+from yggdrasil_lm.symbolic import Program, Solution, fact
 from yggdrasil_lm.core.edges import Edge, EdgeType
 from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
 from yggdrasil_lm.core.executor import (
@@ -47,10 +51,11 @@ from yggdrasil_lm.media import (
 )
 
 __all__ = [
-    "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_tool", "create_transform",
+    "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_reasoner", "create_tool", "create_transform",
     "AnthropicBackend", "OpenAIBackend", "ClaudeCodeExecutor",
     "BatchRun", "BatchItemResult", "BatchStatus",
-    "AgentNode", "ApprovalNode", "ContextNode", "ToolNode", "GraphNode", "TransformNode",
+    "AgentNode", "ApprovalNode", "ContextNode", "ToolNode", "GraphNode", "TransformNode", "ReasonerNode", "FactSource",
+    "Program", "Solution", "fact",
     "RetryPolicy", "ExecutionPolicy", "RouteRule",
     "Edge", "EdgeType",
     "END_NODE",

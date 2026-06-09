@@ -1,0 +1,135 @@
+"""Knowledge-graph-as-factbase tools.
+
+These let an ``AgentNode`` (the neural side) query the typed, temporal knowledge
+graph (the symbolic side) at runtime — neighbours, reachability, and a dump of
+edges/nodes as ground Datalog facts that can be fed straight into a
+:class:`~yggdrasil_lm.core.nodes.ReasonerNode`.
+
+Every callable opts into the live ``GraphStore`` by declaring a ``store``
+keyword parameter; the executor injects it automatically (see
+``GraphExecutor._callable_injection_kwargs``). Register them with
+``app.use_default_tools()`` or ``executor.register_tool(ref, fn)``.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from yggdrasil_lm.core.edges import EdgeType
+from yggdrasil_lm.core.store import GraphStore
+
+
+def _label(node: Any, use_names: bool) -> str:
+    if node is None:
+        return ""
+    return node.name if (use_names and getattr(node, "name", "")) else node.node_id
+
+
+async def neighbors(input: dict[str, Any], *, store: GraphStore) -> dict[str, Any]:
+    """Return neighbours of a node, optionally filtered by edge type.
+
+    Input: ``{"node_id": str, "edge_type": str|None, "depth": int=1,
+              "use_names": bool=True}``
+    """
+    node_id = input.get("node_id", "")
+    if not node_id:
+        return {"error": "node_id required", "neighbors": []}
+    etype = _coerce_edge_type(input.get("edge_type"))
+    depth = int(input.get("depth", 1))
+    use_names = bool(input.get("use_names", True))
+    nodes = await store.neighbors(node_id, edge_type=etype, depth=depth)
+    return {
+        "neighbors": [
+            {"node_id": n.node_id, "name": n.name, "node_type": str(n.node_type)}
+            for n in nodes
+        ],
+        "labels": [_label(n, use_names) for n in nodes],
+        "count": len(nodes),
+    }
+
+
+async def reachable(input: dict[str, Any], *, store: GraphStore) -> dict[str, Any]:
+    """Transitive reachability from a node along one edge type (BFS closure).
+
+    Input: ``{"node_id": str, "edge_type": str, "max_depth": int=16,
+              "use_names": bool=True}``
+    Returns the set of reachable node labels and whether ``target`` (optional)
+    is reachable.
+    """
+    node_id = input.get("node_id", "")
+    if not node_id:
+        return {"error": "node_id required", "reachable": []}
+    etype = _coerce_edge_type(input.get("edge_type"))
+    max_depth = int(input.get("max_depth", 16))
+    use_names = bool(input.get("use_names", True))
+
+    visited: set[str] = set()
+    frontier = {node_id}
+    for _ in range(max_depth):
+        nxt: set[str] = set()
+        for nid in frontier:
+            for e in await store.get_edges(nid, edge_type=etype, direction="out"):
+                if e.dst_id not in visited and e.dst_id != node_id:
+                    nxt.add(e.dst_id)
+        visited |= frontier
+        frontier = nxt - visited
+        if not frontier:
+            break
+    visited.discard(node_id)
+
+    labels = []
+    for nid in visited:
+        n = await store.get_node(nid)
+        if n:
+            labels.append(_label(n, use_names))
+
+    target = input.get("target")
+    result: dict[str, Any] = {"reachable": sorted(labels), "count": len(labels)}
+    if target is not None:
+        result["target_reachable"] = target in set(labels) or target in visited
+    return result
+
+
+async def facts(input: dict[str, Any], *, store: GraphStore) -> dict[str, Any]:
+    """Dump the graph as ground Datalog facts ready for a ReasonerNode.
+
+    Edges become binary facts ``edge_type(src, dst)``; when ``include_nodes`` is
+    set, each node becomes a unary fact ``node_type(label)``.
+
+    Input: ``{"edge_types": [str]|None, "include_nodes": bool=False,
+              "use_names": bool=True}``  (``edge_types=None`` ⟹ all edge types)
+    Returns ``{"facts": [["edge_type","src","dst"], ...]}`` — list form, which
+    ``normalise_fact`` accepts directly.
+    """
+    use_names = bool(input.get("use_names", True))
+    requested = input.get("edge_types")
+    wanted = {str(t) for t in requested} if requested else None
+
+    out: list[list[Any]] = []
+    label_cache: dict[str, str] = {}
+
+    async def lbl(nid: str) -> str:
+        if nid not in label_cache:
+            label_cache[nid] = _label(await store.get_node(nid), use_names)
+        return label_cache[nid]
+
+    for e in await store.list_edges():
+        etype = str(e.edge_type)
+        if wanted is not None and etype not in wanted:
+            continue
+        out.append([etype.lower(), await lbl(e.src_id), await lbl(e.dst_id)])
+
+    if input.get("include_nodes"):
+        for n in await store.list_nodes():
+            out.append([str(n.node_type), _label(n, use_names)])
+
+    return {"facts": out, "count": len(out)}
+
+
+def _coerce_edge_type(value: Any) -> EdgeType | None:
+    if not value:
+        return None
+    try:
+        return EdgeType(value)
+    except ValueError:
+        return None

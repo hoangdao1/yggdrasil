@@ -14,11 +14,20 @@ from typing import Any
 from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
 from yggdrasil_lm.core.edges import Edge
 from yggdrasil_lm.core.executor import GraphExecutor, QueryContent
-from yggdrasil_lm.core.nodes import AgentNode, ContextNode, GraphNode, PromptNode, ToolNode, TransformNode
+from yggdrasil_lm.core.nodes import (
+    AgentNode,
+    ContextNode,
+    FactSource,
+    GraphNode,
+    PromptNode,
+    ReasonerNode,
+    ToolNode,
+    TransformNode,
+)
 from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
 from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
 
-NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | GraphNode | str
+NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | ReasonerNode | GraphNode | str
 END_NODE = "__END__"
 
 
@@ -84,6 +93,46 @@ def create_transform(
         input_keys=input_keys or [],
         output_key=output_key,
         is_async=is_async,
+        **kwargs,
+    )
+
+
+def create_reasoner(
+    name: str,
+    *,
+    program: str = "",
+    rules: list[dict[str, Any]] | None = None,
+    state_keys: list[str] | None = None,
+    edge_types: list[str] | None = None,
+    include_node_facts: bool = False,
+    query: list[str] | None = None,
+    output_key: str = "inferred",
+    emit_derived_only: bool = True,
+    with_proof: bool = False,
+    fail_on_empty: bool = False,
+    description: str = "",
+    **kwargs: Any,
+) -> ReasonerNode:
+    """Create a ReasonerNode — a symbolic Datalog inference step (no LLM).
+
+    ``program`` is Datalog source (see ``yggdrasil_lm.symbolic.datalog``); facts
+    are pulled from ``state_keys`` and/or knowledge-graph ``edge_types``.
+    """
+    return ReasonerNode(
+        name=name,
+        description=description,
+        program=program,
+        rules=rules or [],
+        fact_source=FactSource(
+            state_keys=state_keys or [],
+            edge_types=edge_types or [],
+            include_node_facts=include_node_facts,
+        ),
+        query=query or [],
+        output_key=output_key,
+        emit_derived_only=emit_derived_only,
+        with_proof=with_proof,
+        fail_on_empty=fail_on_empty,
         **kwargs,
     )
 
@@ -261,6 +310,24 @@ class GraphApp:
         if fn is not None:
             self.executor.register_tool(transform.callable_ref, fn)
         return transform
+
+    async def add_reasoner(self, name: str, **kwargs: Any) -> ReasonerNode:
+        """Register a ReasonerNode — the symbolic half of a neurosymbolic graph.
+
+        See ``create_reasoner`` for arguments. Example::
+
+            reasoner = await app.add_reasoner(
+                "EligibilityRules",
+                program='''
+                    eligible(?p) :- applicant(?p, ?age), ?age >= 18, resident(?p).
+                ''',
+                state_keys=["facts"],   # facts an upstream agent extracted
+                query=["eligible"],
+            )
+        """
+        reasoner = create_reasoner(name, **kwargs)
+        await self.store.upsert_node(reasoner)
+        return reasoner
 
     async def add_context(self, name: str, content: str, **kwargs: Any) -> ContextNode:
         ctx = create_context(name, content, **kwargs)

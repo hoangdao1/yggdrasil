@@ -23,6 +23,9 @@ from typing import Any, Callable
 
 from yggdrasil_lm.tools.code_exec import run_python
 from yggdrasil_lm.tools.echo import echo
+from yggdrasil_lm.tools.kg_query import facts as kg_facts
+from yggdrasil_lm.tools.kg_query import neighbors as kg_neighbors
+from yggdrasil_lm.tools.kg_query import reachable as kg_reachable
 from yggdrasil_lm.tools.web_search import search as web_search
 
 
@@ -56,8 +59,11 @@ class ToolRegistry:
     def load(self, callable_ref: str) -> Callable[..., Any]:
         """Load a callable from a dotted import path if not already registered.
 
-        e.g. "tools.web_search.search" imports
-        yggdrasil.tools.web_search and returns its .search attribute.
+        e.g. "tools.web_search.search" imports ``yggdrasil_lm.tools.web_search``
+        and returns its ``.search`` attribute. A bare ``tools.*`` ref (the
+        documented short form, also used by the default registrations) is
+        resolved against the ``yggdrasil_lm`` package; a fully-qualified ref is
+        imported as-is.
         """
         if callable_ref in self._registry:
             return self._registry[callable_ref]
@@ -66,7 +72,26 @@ class ToolRegistry:
         if len(parts) != 2:
             raise ImportError(f"Invalid callable_ref: {callable_ref!r}")
         module_path, fn_name = parts
-        module = importlib.import_module(module_path)
+
+        candidates = [module_path]
+        # Short refs like "tools.echo" live under the package, not at top level.
+        if not module_path.startswith("yggdrasil_lm."):
+            candidates.append(f"yggdrasil_lm.{module_path}")
+
+        module = None
+        last_err: ImportError | None = None
+        for candidate in candidates:
+            try:
+                module = importlib.import_module(candidate)
+                break
+            except ImportError as exc:
+                last_err = exc
+        if module is None:
+            raise ImportError(
+                f"Could not import module for callable_ref {callable_ref!r} "
+                f"(tried {candidates})"
+            ) from last_err
+
         fn = getattr(module, fn_name)
         self.register(callable_ref, fn)
         return fn
@@ -110,3 +135,9 @@ default_registry.register("tools.web_search.search", web_search)
 #   executor.register_tool("tools.code_exec.run_python", run_python)
 # ---------------------------------------------------------------------------
 default_registry.register("tools.echo.echo", echo)
+
+# Knowledge-graph-as-factbase tools (the symbolic query surface). These receive
+# the live GraphStore via `store` keyword injection — safe, read-only.
+default_registry.register("tools.kg_query.neighbors", kg_neighbors)
+default_registry.register("tools.kg_query.reachable", kg_reachable)
+default_registry.register("tools.kg_query.facts", kg_facts)

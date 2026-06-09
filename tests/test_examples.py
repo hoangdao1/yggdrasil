@@ -7,7 +7,14 @@ from examples.builder_echo import run_demo as run_builder_echo
 from examples.deterministic_routing import run_demo as run_deterministic_routing
 from examples.parallel_workers import run_demo as run_parallel_workers
 from examples.research_pipeline import run_pipeline
+from examples.neurosymbolic_pipeline import main as run_neurosymbolic
 from examples._stub_backend import SequenceBackend, end_turn
+
+
+@pytest.mark.asyncio
+async def test_neurosymbolic_pipeline_example_runs():
+    """Smoke-test the neurosymbolic example (offline StubBackend, no API key)."""
+    await run_neurosymbolic()
 
 
 @pytest.mark.asyncio

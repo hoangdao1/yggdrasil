@@ -1,0 +1,737 @@
+"""A small, dependency-free Datalog engine with stratified negation.
+
+This is the symbolic reasoner that powers neurosymbolic pipelines in yggdrasil.
+It is deliberately self-contained (pure standard library) so it adds no install
+weight and can run inside a :class:`ReasonerNode` with no external solver.
+
+What it supports
+----------------
+* Positive Datalog with **semi-naive forward chaining to a fixpoint**.
+* **Negation as failure** with automatic **stratification** (a rule program that
+  cannot be stratified — i.e. recursion through negation — is rejected with a
+  clear :class:`StratificationError`).
+* **Comparison built-ins** in rule bodies: ``=`` ``==`` ``!=`` ``<`` ``<=``
+  ``>`` ``>=`` (e.g. ``adult(?p) :- person(?p, ?age), ?age >= 18``).
+* **Safety checking**: every variable in a rule head, in a negated literal and
+  in a comparison must be bound by a positive body literal. Unsafe rules are
+  rejected at compile time (:class:`UnsafeRuleError`).
+* Optional **proof trace** (``solve(..., with_proof=True)``) recording, for each
+  derived fact, the rule and the ground body literals that justified it — the
+  explainability hook a neural agent can verbalise.
+
+Term & syntax conventions
+--------------------------
+* A **variable** is written ``?name`` (always prefixed with ``?``).
+* A **constant** is a quoted string (``"alice"`` / ``'alice'``), a number
+  (``42``, ``3.14``), the literals ``true`` / ``false``, or a bare word
+  (``alice``) which is treated as a string constant.
+* An **atom** is ``predicate(term, term, ...)``; a 0-arity atom is ``flag()``.
+* A **rule** is ``head :- body1, body2, ... .`` (trailing ``.`` optional).
+* A **fact** is a rule with an empty (ground) body: ``parent("alice","bob").``
+* Comments start with ``#`` or ``%`` and run to end of line.
+
+Facts handed to :meth:`Program.solve` may be given as native tuples
+``("parent", "alice", "bob")``, as :func:`fact` results, as ``["parent", ...]``
+lists, or as dicts ``{"predicate": "parent", "args": [...]}`` — see
+:func:`normalise_fact`.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Iterator
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+class DatalogError(Exception):
+    """Base class for all errors raised by the Datalog engine."""
+
+
+class ParseError(DatalogError):
+    """Raised when a rule program cannot be parsed."""
+
+
+class UnsafeRuleError(DatalogError):
+    """Raised when a rule has variables that are not range-restricted."""
+
+
+class StratificationError(DatalogError):
+    """Raised when a program recurses through negation (cannot be stratified)."""
+
+
+# ---------------------------------------------------------------------------
+# Terms
+# ---------------------------------------------------------------------------
+
+# A ground fact is represented internally as a tuple: (predicate, arg1, arg2, ...)
+# where each arg is a plain Python scalar (str | int | float | bool).
+GroundFact = tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class Var:
+    """A logic variable, e.g. ``?x``."""
+
+    name: str
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"?{self.name}"
+
+
+@dataclass(frozen=True)
+class Const:
+    """A constant term (str | int | float | bool)."""
+
+    value: Any
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return repr(self.value)
+
+
+Term = Var | Const
+
+
+@dataclass(frozen=True)
+class Atom:
+    """A predicate applied to terms, e.g. ``parent(?x, "bob")``."""
+
+    predicate: str
+    terms: tuple[Term, ...] = ()
+    negated: bool = False
+
+    @property
+    def arity(self) -> int:
+        return len(self.terms)
+
+    def vars(self) -> set[str]:
+        return {t.name for t in self.terms if isinstance(t, Var)}
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        inner = ", ".join(repr(t) for t in self.terms)
+        prefix = "not " if self.negated else ""
+        return f"{prefix}{self.predicate}({inner})"
+
+
+_COMPARATORS = {"=", "==", "!=", "<", "<=", ">", ">="}
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """A comparison built-in body literal, e.g. ``?age >= 18``."""
+
+    op: str
+    left: Term
+    right: Term
+
+    def vars(self) -> set[str]:
+        return {t.name for t in (self.left, self.right) if isinstance(t, Var)}
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"{self.left!r} {self.op} {self.right!r}"
+
+
+BodyLiteral = Atom | Comparison
+
+
+@dataclass(frozen=True)
+class Rule:
+    """A Horn clause: ``head :- body``. A fact has an empty body."""
+
+    head: Atom
+    body: tuple[BodyLiteral, ...] = ()
+    name: str = ""
+
+    @property
+    def is_fact(self) -> bool:
+        return not self.body
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        if self.is_fact:
+            return f"{self.head!r}."
+        body = ", ".join(repr(b) for b in self.body)
+        return f"{self.head!r} :- {body}."
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+_VAR_RE = re.compile(r"^\?[A-Za-z_][A-Za-z0-9_]*$")
+_ATOM_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$", re.DOTALL)
+_INT_RE = re.compile(r"^[+-]?\d+$")
+_FLOAT_RE = re.compile(r"^[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?$")
+
+
+def _strip_comments(text: str) -> str:
+    out_lines = []
+    for line in text.splitlines():
+        # Strip # / % comments, but not inside quotes.
+        in_quote: str | None = None
+        cut = len(line)
+        for i, ch in enumerate(line):
+            if in_quote:
+                if ch == in_quote:
+                    in_quote = None
+            elif ch in ("'", '"'):
+                in_quote = ch
+            elif ch in ("#", "%"):
+                cut = i
+                break
+        out_lines.append(line[:cut])
+    return "\n".join(out_lines)
+
+
+def _split_top_level(text: str, sep: str = ",") -> list[str]:
+    """Split on ``sep`` characters that sit at parenthesis/quote depth 0."""
+    parts: list[str] = []
+    depth = 0
+    in_quote: str | None = None
+    buf: list[str] = []
+    for ch in text:
+        if in_quote:
+            buf.append(ch)
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            buf.append(ch)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == sep and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _parse_term(token: str) -> Term:
+    token = token.strip()
+    if not token:
+        raise ParseError("empty term")
+    if token.startswith("?"):
+        if not _VAR_RE.match(token):
+            raise ParseError(f"invalid variable: {token!r}")
+        return Var(token[1:])
+    if (token[0] == '"' and token[-1] == '"' and len(token) >= 2) or (
+        token[0] == "'" and token[-1] == "'" and len(token) >= 2
+    ):
+        return Const(token[1:-1])
+    if _INT_RE.match(token):
+        return Const(int(token))
+    if _FLOAT_RE.match(token):
+        return Const(float(token))
+    if token in ("true", "false"):
+        return Const(token == "true")
+    # Bare word → string constant.
+    return Const(token)
+
+
+def _parse_atom(text: str, *, negated: bool = False) -> Atom:
+    text = text.strip()
+    m = _ATOM_RE.match(text)
+    if not m:
+        raise ParseError(f"malformed atom: {text!r} (expected 'pred(args)')")
+    predicate, args_src = m.group(1), m.group(2).strip()
+    if not args_src:
+        return Atom(predicate=predicate, terms=(), negated=negated)
+    terms = tuple(_parse_term(t) for t in _split_top_level(args_src))
+    return Atom(predicate=predicate, terms=terms, negated=negated)
+
+
+def _parse_body_literal(text: str) -> BodyLiteral:
+    text = text.strip()
+    # Comparison? look for a top-level comparator surrounded by terms.
+    # Order matters: check the two-char operators before single-char.
+    for op in ("<=", ">=", "==", "!=", "=", "<", ">"):
+        # Avoid splitting inside an atom's parens by scanning at depth 0.
+        idx = _find_top_level_op(text, op)
+        if idx is not None:
+            left = text[:idx].strip()
+            right = text[idx + len(op):].strip()
+            if left and right and "(" not in left and "(" not in right:
+                return Comparison(op=op, left=_parse_term(left), right=_parse_term(right))
+    if text.startswith("not ") or text.startswith("not(") or text.startswith("!"):
+        rest = text[1:] if text.startswith("!") else text[4:]
+        return _parse_atom(rest, negated=True)
+    return _parse_atom(text)
+
+
+def _find_top_level_op(text: str, op: str) -> int | None:
+    depth = 0
+    in_quote: str | None = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and text.startswith(op, i):
+            # Don't match '=' that is really part of '==', '<=', '>=', '!='.
+            if op == "=" and (text[i - 1: i] in ("<", ">", "!", "=") or text[i + 1: i + 2] == "="):
+                i += 1
+                continue
+            if op in ("<", ">") and text[i + 1: i + 2] == "=":
+                i += 1
+                continue
+            return i
+        i += 1
+    return None
+
+
+def parse_program(text: str) -> list[Rule]:
+    """Parse a Datalog program (string DSL) into a list of :class:`Rule`."""
+    text = _strip_comments(text)
+    rules: list[Rule] = []
+    # Statements terminate at top-level '.' — but '.' also appears in floats
+    # (3.14) and inside quotes, so split carefully.
+    for stmt in _split_statements(text):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        if ":-" in stmt:
+            head_src, body_src = stmt.split(":-", 1)
+            head = _parse_atom(head_src)
+            body = tuple(
+                _parse_body_literal(b)
+                for b in _split_top_level(body_src)
+                if b.strip()
+            )
+            rules.append(Rule(head=head, body=body, name=stmt))
+        else:
+            rules.append(Rule(head=_parse_atom(stmt), body=(), name=stmt))
+    return rules
+
+
+def rule_from_obj(obj: Any) -> list[Rule]:
+    """Parse a single rule given as a DSL string or a structured dict.
+
+    Accepted dict shape::
+
+        {"head": "ancestor(?x, ?z)", "body": ["parent(?x, ?y)", "ancestor(?y, ?z)"]}
+
+    ``body`` may be omitted/empty for a fact. Returns a list (a string may parse
+    to several rules if it contains multiple statements).
+    """
+    if isinstance(obj, Rule):
+        return [obj]
+    if isinstance(obj, str):
+        return parse_program(obj)
+    if isinstance(obj, dict):
+        head = obj.get("head")
+        if not head:
+            raise ParseError(f"rule dict missing 'head': {obj!r}")
+        body = obj.get("body") or []
+        if isinstance(body, str):
+            body = [body]
+        if body:
+            stmt = f"{head} :- {', '.join(body)}"
+        else:
+            stmt = str(head)
+        return parse_program(stmt)
+    raise ParseError(f"cannot interpret rule: {obj!r}")
+
+
+def _split_statements(text: str) -> list[str]:
+    """Split a program into statements on top-level '.' not inside a float/quote."""
+    stmts: list[str] = []
+    depth = 0
+    in_quote: str | None = None
+    buf: list[str] = []
+    n = len(text)
+    for i, ch in enumerate(text):
+        if in_quote:
+            buf.append(ch)
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            buf.append(ch)
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "." and depth == 0:
+            # A '.' between two digits is a decimal point, not a terminator.
+            prev = text[i - 1] if i > 0 else ""
+            nxt = text[i + 1] if i + 1 < n else ""
+            if prev.isdigit() and nxt.isdigit():
+                buf.append(ch)
+                continue
+            stmts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if "".join(buf).strip():
+        stmts.append("".join(buf))
+    return stmts
+
+
+# ---------------------------------------------------------------------------
+# Fact helpers (public)
+# ---------------------------------------------------------------------------
+
+def fact(predicate: str, *args: Any) -> GroundFact:
+    """Build a ground fact tuple: ``fact("parent", "alice", "bob")``."""
+    return (predicate, *args)
+
+
+def normalise_fact(item: Any) -> GroundFact:
+    """Coerce a user-supplied fact into the internal ``(pred, *args)`` tuple.
+
+    Accepts:
+      * a tuple/list ``("parent", "alice", "bob")`` / ``["parent", "alice"]``
+      * a dict ``{"predicate": "parent", "args": [...]}`` (``terms`` also works)
+      * a string in atom syntax ``parent("alice", "bob")`` (must be ground)
+    """
+    if isinstance(item, str):
+        atom = _parse_atom(item)
+        if atom.vars():
+            raise UnsafeRuleError(f"input fact contains variables: {item!r}")
+        return (atom.predicate, *(t.value for t in atom.terms))  # type: ignore[union-attr]
+    if isinstance(item, dict):
+        pred = item.get("predicate") or item.get("pred")
+        if not pred:
+            raise DatalogError(f"fact dict missing 'predicate': {item!r}")
+        args = item.get("args", item.get("terms", []))
+        return (pred, *args)
+    if isinstance(item, (list, tuple)):
+        if not item:
+            raise DatalogError("empty fact")
+        return tuple(item)
+    raise DatalogError(f"cannot interpret fact: {item!r}")
+
+
+def atoms_to_facts(items: Iterable[Any]) -> set[GroundFact]:
+    """Normalise an iterable of user facts into a set of internal tuples."""
+    return {normalise_fact(i) for i in items}
+
+
+def fact_to_dict(f: GroundFact) -> dict[str, Any]:
+    """Render an internal fact tuple as a JSON-friendly dict."""
+    return {"predicate": f[0], "args": list(f[1:])}
+
+
+# ---------------------------------------------------------------------------
+# Solution
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Solution:
+    """The result of running a :class:`Program`.
+
+    Attributes:
+        facts: the full deductive closure (input facts + all derived facts).
+        derived: only the newly inferred facts (closure minus input facts).
+        justifications: when solved ``with_proof=True``, maps each derived fact
+            to ``(rule_repr, [ground_body_facts])`` recording why it holds.
+    """
+
+    facts: set[GroundFact]
+    derived: set[GroundFact] = field(default_factory=set)
+    justifications: dict[GroundFact, tuple[str, list[GroundFact]]] = field(default_factory=dict)
+
+    def query(self, predicate: str) -> list[GroundFact]:
+        """All facts (input + derived) with the given predicate."""
+        return sorted((f for f in self.facts if f[0] == predicate), key=repr)
+
+    def as_dicts(self, *, only_derived: bool = False) -> list[dict[str, Any]]:
+        """Render facts as JSON-friendly ``{"predicate", "args"}`` dicts."""
+        src = self.derived if only_derived else self.facts
+        return [fact_to_dict(f) for f in sorted(src, key=repr)]
+
+    def explain(self, f: GroundFact) -> str:
+        """Human-readable, one-line proof for a derived fact (if recorded)."""
+        if f not in self.justifications:
+            return f"{fact_to_dict(f)} (given)" if f in self.facts else "(unknown fact)"
+        rule_repr, support = self.justifications[f]
+        because = ", ".join(repr(s) for s in support) or "(no premises)"
+        return f"{f[0]}{f[1:]} ⟸ {because}   [rule: {rule_repr}]"
+
+
+# ---------------------------------------------------------------------------
+# Program
+# ---------------------------------------------------------------------------
+
+class Program:
+    """A compiled, validated, stratified Datalog rule program."""
+
+    def __init__(self, rules: Iterable[Rule]):
+        self.rules: list[Rule] = list(rules)
+        self._base_facts: set[GroundFact] = set()
+        self._derivation_rules: list[Rule] = []
+        for r in self.rules:
+            if r.is_fact:
+                if r.head.vars():
+                    raise UnsafeRuleError(f"fact has unbound variables: {r!r}")
+                self._base_facts.add(
+                    (r.head.predicate, *(t.value for t in r.head.terms))  # type: ignore[union-attr]
+                )
+            else:
+                self._derivation_rules.append(_compile_rule(r))
+        # Predicates that can be *derived* (appear as a rule head).
+        self._intensional: set[str] = {r.head.predicate for r in self._derivation_rules}
+        self._strata: list[set[str]] = _stratify(self._derivation_rules, self._intensional)
+
+    @classmethod
+    def parse(cls, text: str) -> "Program":
+        """Compile a program from the string DSL."""
+        return cls(parse_program(text))
+
+    @property
+    def strata(self) -> list[set[str]]:
+        """The computed stratification (predicate sets, lowest stratum first)."""
+        return self._strata
+
+    def solve(
+        self,
+        facts: Iterable[Any] | None = None,
+        *,
+        with_proof: bool = False,
+    ) -> Solution:
+        """Compute the deductive closure of ``facts`` under this program.
+
+        ``facts`` are normalised via :func:`normalise_fact`, so tuples, dicts,
+        lists and atom-syntax strings are all accepted.
+        """
+        db: set[GroundFact] = set(self._base_facts)
+        if facts:
+            db |= atoms_to_facts(facts)
+        input_facts = set(db)
+        justifications: dict[GroundFact, tuple[str, list[GroundFact]]] = {}
+
+        # Evaluate stratum by stratum; negation in a stratum only ever refers to
+        # predicates whose closure is already complete (lower strata), which is
+        # exactly what stratification guarantees.
+        for stratum in self._strata:
+            stratum_rules = [r for r in self._derivation_rules if r.head.predicate in stratum]
+            changed = True
+            while changed:
+                changed = False
+                new_facts: set[GroundFact] = set()
+                for rule in stratum_rules:
+                    for binding, support in _match_body(rule.body, db):
+                        new_fact = _ground_head(rule.head, binding)
+                        if new_fact not in db and new_fact not in new_facts:
+                            new_facts.add(new_fact)
+                            if with_proof and new_fact not in justifications:
+                                justifications[new_fact] = (rule.name or repr(rule), support)
+                if new_facts:
+                    db |= new_facts
+                    changed = True
+
+        return Solution(
+            facts=db,
+            derived=db - input_facts,
+            justifications=justifications,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Compilation: safety check + body reordering
+# ---------------------------------------------------------------------------
+
+def _compile_rule(rule: Rule) -> Rule:
+    """Validate range-restriction and reorder the body (positives first).
+
+    Reordering guarantees that by the time a negated literal or comparison is
+    evaluated left-to-right, all of its variables are already bound.
+    """
+    positives = [b for b in rule.body if isinstance(b, Atom) and not b.negated]
+    others = [b for b in rule.body if not (isinstance(b, Atom) and not b.negated)]
+
+    positive_vars: set[str] = set()
+    for p in positives:
+        positive_vars |= p.vars()
+
+    # Head safety: every head var must be bound by a positive body literal.
+    unbound_head = rule.head.vars() - positive_vars
+    if unbound_head:
+        raise UnsafeRuleError(
+            f"unsafe rule {rule.name or rule!r}: head variable(s) "
+            f"{sorted('?' + v for v in unbound_head)} not bound by any positive literal"
+        )
+    # Negation/comparison safety.
+    for lit in others:
+        unbound = lit.vars() - positive_vars
+        if unbound:
+            kind = "negated literal" if isinstance(lit, Atom) else "comparison"
+            raise UnsafeRuleError(
+                f"unsafe rule {rule.name or rule!r}: {kind} {lit!r} has unbound "
+                f"variable(s) {sorted('?' + v for v in unbound)}"
+            )
+
+    return Rule(head=rule.head, body=(*positives, *others), name=rule.name)
+
+
+# ---------------------------------------------------------------------------
+# Stratification
+# ---------------------------------------------------------------------------
+
+def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
+    """Assign each intensional predicate a stratum number.
+
+    Constraint: for a rule with head P,
+      * positive body pred Q (intensional) ⟹ stratum(P) >= stratum(Q)
+      * negated  body pred Q (intensional) ⟹ stratum(P) >  stratum(Q)
+    A program recursing through negation has no finite assignment → error.
+    """
+    stratum: dict[str, int] = {p: 0 for p in intensional}
+    max_iters = len(intensional) + 1
+    for _ in range(max_iters):
+        changed = False
+        for rule in rules:
+            head_pred = rule.head.predicate
+            for lit in rule.body:
+                if not isinstance(lit, Atom):
+                    continue
+                q = lit.predicate
+                if q not in intensional:
+                    continue
+                required = stratum[q] + (1 if lit.negated else 0)
+                if required > stratum[head_pred]:
+                    stratum[head_pred] = required
+                    changed = True
+        if not changed:
+            break
+    else:
+        # Did not converge within the bound → negative cycle.
+        raise StratificationError(
+            "program cannot be stratified: recursion through negation detected"
+        )
+
+    # Re-verify (a converged-but-violating assignment also means a neg cycle).
+    for rule in rules:
+        for lit in rule.body:
+            if isinstance(lit, Atom) and lit.negated and lit.predicate in intensional:
+                if stratum[lit.predicate] >= stratum[rule.head.predicate]:
+                    raise StratificationError(
+                        f"program cannot be stratified: negated {lit.predicate!r} "
+                        f"is recursively derived with {rule.head.predicate!r}"
+                    )
+
+    groups: dict[int, set[str]] = {}
+    for pred, s in stratum.items():
+        groups.setdefault(s, set()).add(pred)
+    return [groups[k] for k in sorted(groups)]
+
+
+# ---------------------------------------------------------------------------
+# Body matching (backtracking join)
+# ---------------------------------------------------------------------------
+
+def _match_body(
+    body: tuple[BodyLiteral, ...],
+    db: set[GroundFact],
+) -> Iterator[tuple[dict[str, Any], list[GroundFact]]]:
+    """Yield ``(binding, support_facts)`` for every way the body unifies with db."""
+
+    def rec(i: int, binding: dict[str, Any], support: list[GroundFact]) -> Iterator[
+        tuple[dict[str, Any], list[GroundFact]]
+    ]:
+        if i == len(body):
+            yield dict(binding), list(support)
+            return
+        lit = body[i]
+        if isinstance(lit, Comparison):
+            if _eval_comparison(lit, binding):
+                yield from rec(i + 1, binding, support)
+            return
+        if lit.negated:
+            ground = _ground_atom(lit, binding)
+            if ground not in db:  # negation as failure
+                yield from rec(i + 1, binding, support)
+            return
+        # Positive atom: join with every matching ground fact.
+        for f in db:
+            if f[0] != lit.predicate or (len(f) - 1) != lit.arity:
+                continue
+            nb = _unify(lit.terms, f[1:], binding)
+            if nb is not None:
+                support.append(f)
+                yield from rec(i + 1, nb, support)
+                support.pop()
+
+    yield from rec(0, {}, [])
+
+
+def _unify(terms: tuple[Term, ...], values: tuple[Any, ...], binding: dict[str, Any]) -> dict[str, Any] | None:
+    nb = binding
+    copied = False
+    for term, value in zip(terms, values):
+        if isinstance(term, Const):
+            if term.value != value:
+                return None
+        else:  # Var
+            if term.name in nb:
+                if nb[term.name] != value:
+                    return None
+            else:
+                if not copied:
+                    nb = dict(nb)
+                    copied = True
+                nb[term.name] = value
+    return nb
+
+
+def _resolve(term: Term, binding: dict[str, Any]) -> Any:
+    if isinstance(term, Const):
+        return term.value
+    if term.name not in binding:
+        # Safety checking guarantees this never happens for compiled rules.
+        raise UnsafeRuleError(f"unbound variable ?{term.name} at evaluation time")
+    return binding[term.name]
+
+
+def _ground_atom(atom: Atom, binding: dict[str, Any]) -> GroundFact:
+    return (atom.predicate, *(_resolve(t, binding) for t in atom.terms))
+
+
+def _ground_head(head: Atom, binding: dict[str, Any]) -> GroundFact:
+    return _ground_atom(head, binding)
+
+
+def _eval_comparison(cmp: Comparison, binding: dict[str, Any]) -> bool:
+    left = _resolve(cmp.left, binding)
+    right = _resolve(cmp.right, binding)
+    op = cmp.op
+    if op in ("=", "=="):
+        return left == right
+    if op == "!=":
+        return left != right
+    try:
+        if op == "<":
+            return left < right
+        if op == "<=":
+            return left <= right
+        if op == ">":
+            return left > right
+        if op == ">=":
+            return left >= right
+    except TypeError as exc:
+        raise DatalogError(
+            f"cannot compare {left!r} {op} {right!r}: {exc}"
+        ) from exc
+    raise DatalogError(f"unknown comparison operator: {op!r}")
