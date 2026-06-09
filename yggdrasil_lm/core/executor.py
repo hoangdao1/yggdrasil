@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import graphlib
+import inspect
 import json
 import logging
 import re
@@ -919,6 +920,38 @@ class ExecutionOptions:
     allowed_tools: set[str] | None = None
 
 
+@dataclass
+class ResumeReadiness:
+    """Diagnosis of whether a checkpointed/paused context is safe to resume.
+
+    Produced by ``GraphExecutor.inspect_resume()`` so a caller (e.g. a web
+    request handler) can surface problems to a human *before* relaunching a
+    long-running workflow:
+
+    - ``is_stale``      — no trace activity for longer than ``stale_after_seconds``;
+                          the previous run very likely crashed (process kill,
+                          context exhaustion, dropped connection) rather than
+                          pausing cleanly. Confirm with the user before resuming.
+    - ``unrecoverable`` — required outputs absent from BOTH ``ctx.outputs`` and
+                          ``ctx.state.data``; resuming would re-derive them from
+                          nothing or fail. The caller should re-run the step that
+                          produces each one.
+    """
+
+    status: str
+    is_paused: bool
+    is_stale: bool
+    last_event_at: datetime | None
+    seconds_since_last_event: float | None
+    available: list[str]
+    unrecoverable: list[str]
+
+    @property
+    def ok(self) -> bool:
+        """True when nothing blocks an automatic resume."""
+        return not self.is_stale and not self.unrecoverable
+
+
 # ---------------------------------------------------------------------------
 # GraphExecutor — dispatches nodes and traverses the graph
 # ---------------------------------------------------------------------------
@@ -1107,6 +1140,53 @@ class GraphExecutor:
             execution_context=ctx,
         )
 
+    def inspect_resume(
+        self,
+        ctx: ExecutionContext,
+        *,
+        stale_after_seconds: float = 1200.0,
+        required_outputs: list[str] | None = None,
+        now: datetime | None = None,
+    ) -> ResumeReadiness:
+        """Diagnose whether ``ctx`` is safe to resume — no side effects.
+
+        Call this before ``resume()`` / ``resume_from_checkpoint()`` to detect a
+        crashed (not cleanly paused) run and any outputs that can no longer be
+        recovered, surfacing both a stale-checkpoint signal and an unrecoverable
+        list so a caller can confirm with a human before relaunching.
+
+        ``stale_after_seconds`` defaults to 20 minutes. Liveness is measured from
+        the most recent trace event — the last point the run made progress.
+        ``required_outputs`` are looked up in both ``ctx.outputs`` (by node id)
+        and ``ctx.state.data`` (by key). ``now`` is injectable for testing.
+        """
+        last_event_at = max((e.timestamp for e in ctx.trace), default=None)
+        if last_event_at is None:
+            seconds_since: float | None = None
+            is_stale = False
+        else:
+            current = now or datetime.now(timezone.utc)
+            seconds_since = (current - last_event_at).total_seconds()
+            is_stale = seconds_since > stale_after_seconds
+
+        available: list[str] = []
+        unrecoverable: list[str] = []
+        for key in required_outputs or []:
+            if key in ctx.outputs or key in ctx.state.data:
+                available.append(key)
+            else:
+                unrecoverable.append(key)
+
+        return ResumeReadiness(
+            status=ctx.state.status,
+            is_paused=ctx.is_paused(),
+            is_stale=is_stale,
+            last_event_at=last_event_at,
+            seconds_since_last_event=seconds_since,
+            available=available,
+            unrecoverable=unrecoverable,
+        )
+
     async def batch(
         self,
         agent_node_id: str,
@@ -1159,12 +1239,26 @@ class GraphExecutor:
         ctx: ExecutionContext,
         *,
         name: str = "Execution checkpoint",
+        max_inline_chars: int | None = None,
     ) -> ContextNode:
-        """Persist a resumable execution snapshot as a runtime context node."""
+        """Persist a resumable execution snapshot as a runtime context node.
+
+        ``max_inline_chars`` (opt-in; default ``None`` = inline everything, the
+        historical behaviour) offloads oversized entries. A single node output
+        or ``state.data`` value whose JSON encoding exceeds the limit is written
+        to its own sibling blob ``ContextNode`` and replaced in the snapshot with
+        a ``{"$ygg_blob": <node_id>}`` reference. This keeps the checkpoint node
+        compact regardless of how large the carried form/blob payloads grow —
+        without altering the live ``ctx.outputs`` shape during execution.
+        ``load_checkpoint`` transparently rehydrates the references.
+        """
+        snap = ctx.snapshot()
+        if max_inline_chars is not None:
+            snap = await self._offload_snapshot_blobs(ctx, snap, max_inline_chars)
         checkpoint = ContextNode(
             name=name,
             description="Serialized execution checkpoint",
-            content=json.dumps(ctx.snapshot(), default=str),
+            content=json.dumps(snap, default=str),
             content_type="json",
             source="checkpoint",
             group_id=ctx.session_id,
@@ -1184,12 +1278,75 @@ class GraphExecutor:
         )
         return checkpoint
 
+    async def _offload_snapshot_blobs(
+        self,
+        ctx: ExecutionContext,
+        snap: dict[str, Any],
+        max_inline_chars: int,
+    ) -> dict[str, Any]:
+        """Replace oversized top-level snapshot values with blob node refs."""
+        async def offload(value: Any) -> Any:
+            try:
+                encoded = json.dumps(value, default=str)
+            except (TypeError, ValueError):
+                return value
+            if len(encoded) <= max_inline_chars:
+                return value
+            blob = ContextNode(
+                name="Checkpoint blob",
+                description="Offloaded checkpoint payload",
+                content=encoded,
+                content_type="json",
+                source="checkpoint",
+                group_id=ctx.session_id,
+                attributes={"origin": "checkpoint_blob", "session_id": ctx.session_id},
+            )
+            await self.store.upsert_node(blob)
+            return {"$ygg_blob": blob.node_id}
+
+        outputs = snap.get("outputs")
+        if isinstance(outputs, dict):
+            for key, value in list(outputs.items()):
+                outputs[key] = await offload(value)
+        state_data = snap.get("state", {}).get("data")
+        if isinstance(state_data, dict):
+            for key, value in list(state_data.items()):
+                state_data[key] = await offload(value)
+        return snap
+
     async def load_checkpoint(self, checkpoint_node_id: str) -> ExecutionContext:
-        """Restore an execution context from a checkpoint node."""
+        """Restore an execution context from a checkpoint node.
+
+        Blob references written by ``checkpoint_context(max_inline_chars=...)``
+        are rehydrated from their sibling nodes before the context is rebuilt.
+        """
         node = await self.store.get_node(checkpoint_node_id)
         if not isinstance(node, ContextNode):
             raise ValueError(f"Checkpoint node not found: {checkpoint_node_id}")
-        return ExecutionContext.from_snapshot(json.loads(node.content))
+        snap = json.loads(node.content)
+        await self._rehydrate_snapshot_blobs(snap)
+        return ExecutionContext.from_snapshot(snap)
+
+    async def _rehydrate_snapshot_blobs(self, snap: dict[str, Any]) -> None:
+        """Inverse of ``_offload_snapshot_blobs`` — resolve ``$ygg_blob`` refs."""
+        async def resolve(value: Any) -> Any:
+            if isinstance(value, dict) and set(value) == {"$ygg_blob"}:
+                blob = await self.store.get_node(value["$ygg_blob"])
+                if not isinstance(blob, ContextNode):
+                    raise ValueError(
+                        f"Checkpoint blob node missing: {value['$ygg_blob']}"
+                    )
+                return json.loads(blob.content)
+            return value
+
+        outputs = snap.get("outputs")
+        if isinstance(outputs, dict):
+            for key, value in list(outputs.items()):
+                outputs[key] = await resolve(value)
+        state_data = snap.get("state", {}).get("data")
+        if isinstance(state_data, dict):
+            for key, value in list(state_data.items()):
+                state_data[key] = await resolve(value)
 
     async def resume_from_checkpoint(
         self,
@@ -2293,6 +2450,35 @@ class GraphExecutor:
     # Tool execution
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _callable_injection_kwargs(fn: Any, ctx: ExecutionContext) -> dict[str, Any]:
+        """Extra keyword arguments to pass to a tool/transform callable.
+
+        A registered callable opts in to runtime context by declaring an
+        explicit ``session_id`` and/or ``ctx`` parameter in its signature:
+
+            def load_form(payload, *, session_id): ...          # gets ctx.session_id
+            def upsert(payload, *, ctx): ...                     # gets the ExecutionContext
+
+        This is how a tool backed by a stateful service (e.g. an MCP client that
+        holds per-session in-memory state) routes each call to the right session.
+        Callables that take only the payload — the overwhelming majority, and
+        every mock in the test suite — receive no extra kwargs and are wholly
+        unaffected. Injection is keyed on the *explicit* parameter name only;
+        ``**kwargs`` catch-alls are deliberately NOT injected into, to keep the
+        contract predictable and avoid colliding with forwarded payload keys.
+        """
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return {}
+        kwargs: dict[str, Any] = {}
+        if "session_id" in params:
+            kwargs["session_id"] = ctx.session_id
+        if "ctx" in params:
+            kwargs["ctx"] = ctx
+        return kwargs
+
     async def _execute_tool(
         self,
         node: ToolNode,
@@ -2314,10 +2500,12 @@ class GraphExecutor:
             if idempotency_key in ctx.state.idempotency_cache:
                 return ctx.state.idempotency_cache[idempotency_key]
 
+        injected = self._callable_injection_kwargs(fn, ctx)
+
         async def invoke() -> Any:
             if node.is_async:
-                return await fn(runtime_payload)
-            return await asyncio.to_thread(fn, runtime_payload)
+                return await fn(runtime_payload, **injected)
+            return await asyncio.to_thread(fn, runtime_payload, **injected)
 
         result = await self._call_with_retry(
             invoke,
@@ -2366,10 +2554,12 @@ class GraphExecutor:
 
         t0 = time.monotonic()
 
+        injected = self._callable_injection_kwargs(fn, ctx)
+
         async def invoke() -> Any:
             if node.is_async:
-                return await fn(input_data)
-            return await asyncio.to_thread(fn, input_data)
+                return await fn(input_data, **injected)
+            return await asyncio.to_thread(fn, input_data, **injected)
 
         result = await self._call_with_retry(invoke, ctx, node=node, policy=node.execution_policy)
         duration_ms = int((time.monotonic() - t0) * 1000)

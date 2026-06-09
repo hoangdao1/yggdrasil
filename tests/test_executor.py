@@ -28,6 +28,7 @@ from yggdrasil_lm.core.nodes import (
     RouteRule,
     SchemaNode,
     ToolNode,
+    TransformNode,
 )
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.core.executor import TraceEvent, WorkflowState
@@ -804,3 +805,172 @@ def test_explain_run_paused_true_but_no_pause_event():
     explanation = explain_run(ctx)
     assert explanation.paused is True
     assert explanation.pauses == []
+
+
+# ---------------------------------------------------------------------------
+# Tool/transform runtime-context injection (session affinity)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_tool_callable_receives_session_id(store):
+    """A tool whose signature declares `session_id` gets ctx.session_id injected."""
+    tool = ToolNode(name="load_form", callable_ref="mcp.load_form", description="x")
+    await store.upsert_node(tool)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+
+    seen: dict[str, Any] = {}
+
+    async def load_form(payload, *, session_id):
+        seen["session_id"] = session_id
+        return {"loaded": True}
+
+    executor.register_tool("mcp.load_form", load_form)
+    ctx = ExecutionContext(query="x", session_id="sess-abc")
+    result = await executor._execute_tool(tool, ctx, input_data={"url": "u"})
+
+    assert result == {"loaded": True}
+    assert seen["session_id"] == "sess-abc"
+
+
+@pytest.mark.asyncio
+async def test_tool_callable_receives_ctx(store):
+    """A tool declaring `ctx` gets the live ExecutionContext (session affinity)."""
+    tool = ToolNode(name="upsert", callable_ref="mcp.upsert", description="x")
+    await store.upsert_node(tool)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+
+    captured: dict[str, Any] = {}
+
+    async def upsert(payload, *, ctx):
+        captured["session_id"] = ctx.session_id
+        captured["is_ctx"] = isinstance(ctx, ExecutionContext)
+        return "ok"
+
+    executor.register_tool("mcp.upsert", upsert)
+    ctx = ExecutionContext(query="x", session_id="sess-xyz")
+    await executor._execute_tool(tool, ctx, input_data={"a": 1})
+
+    assert captured["session_id"] == "sess-xyz"
+    assert captured["is_ctx"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_callable_without_injection_params_unaffected(store):
+    """Payload-only callables (the common case) receive no extra kwargs."""
+    tool = ToolNode(name="plain", callable_ref="tools.plain", description="x")
+    await store.upsert_node(tool)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+
+    async def plain(payload):
+        return {"echo": payload}
+
+    executor.register_tool("tools.plain", plain)
+    result = await executor._execute_tool(
+        tool, ExecutionContext(query="x"), input_data={"k": "v"}
+    )
+    assert result == {"echo": {"k": "v"}}
+
+
+@pytest.mark.asyncio
+async def test_transform_callable_receives_session_id(store):
+    """Transforms support the same opt-in runtime-context injection."""
+    t = TransformNode(name="emit", callable_ref="t.emit", is_async=True)
+    await store.upsert_node(t)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+
+    seen: dict[str, Any] = {}
+
+    async def emit(data, *, session_id):
+        seen["session_id"] = session_id
+        return {"ok": True}
+
+    executor.register_tool("t.emit", emit)
+    ctx = ExecutionContext(query="x", session_id="sess-T")
+    await executor.run(t.node_id, "ignored", execution_context=ctx, state={"value": 1})
+    assert seen["session_id"] == "sess-T"
+
+
+# ---------------------------------------------------------------------------
+# inspect_resume — staleness + unrecoverable surfacing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inspect_resume_flags_stale_and_unrecoverable(store):
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+    ctx = ExecutionContext(query="x", session_id="sess-stale")
+    # An event 30 minutes before "now".
+    old = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ctx.trace.append(TraceEvent(event_type="hop", session_id=ctx.session_id,
+                                node_id="n1", node_name="n1", timestamp=old, payload={}))
+    ctx.outputs["have_this"] = {"x": 1}
+
+    now = datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc)
+    report = executor.inspect_resume(
+        ctx, stale_after_seconds=1200,
+        required_outputs=["have_this", "missing_one"], now=now,
+    )
+
+    assert report.is_stale is True
+    assert report.seconds_since_last_event == 1800.0
+    assert report.available == ["have_this"]
+    assert report.unrecoverable == ["missing_one"]
+    assert report.ok is False
+
+
+@pytest.mark.asyncio
+async def test_inspect_resume_ok_when_fresh_and_complete(store):
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+    ctx = ExecutionContext(query="x", session_id="sess-fresh")
+    recent = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    ctx.trace.append(TraceEvent(event_type="hop", session_id=ctx.session_id,
+                                node_id="n1", node_name="n1", timestamp=recent, payload={}))
+    ctx.state.data["step_a"] = {"done": True}
+
+    now = datetime(2026, 1, 1, 12, 1, 0, tzinfo=timezone.utc)
+    report = executor.inspect_resume(
+        ctx, stale_after_seconds=1200, required_outputs=["step_a"], now=now,
+    )
+    assert report.is_stale is False
+    assert report.unrecoverable == []
+    assert report.ok is True
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint blob offloading (compact snapshots for large payloads)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_checkpoint_offloads_large_outputs_and_rehydrates(store):
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+    ctx = ExecutionContext(query="x", session_id="sess-blob")
+    big = {"form": "F" * 5000}          # well over the threshold
+    small = {"k": "v"}
+    ctx.outputs["big_node"] = big
+    ctx.outputs["small_node"] = small
+    ctx.state.data["big_state"] = {"blob": "B" * 5000}
+
+    checkpoint = await executor.checkpoint_context(ctx, max_inline_chars=1000)
+
+    # The checkpoint node itself stays compact — big values became refs.
+    assert '"$ygg_blob"' in checkpoint.content
+    assert "F" * 5000 not in checkpoint.content
+    assert "B" * 5000 not in checkpoint.content
+    assert '"k": "v"' in checkpoint.content   # small value stays inline
+
+    restored = await executor.load_checkpoint(checkpoint.node_id)
+    assert restored.outputs["big_node"] == big
+    assert restored.outputs["small_node"] == small
+    assert restored.state.data["big_state"] == {"blob": "B" * 5000}
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_without_offload_is_unchanged(store):
+    """Default (max_inline_chars=None) inlines everything — historical behaviour."""
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
+    ctx = ExecutionContext(query="x", session_id="sess-inline")
+    ctx.outputs["node"] = {"form": "F" * 3000}
+
+    checkpoint = await executor.checkpoint_context(ctx)
+    assert "$ygg_blob" not in checkpoint.content
+    restored = await executor.load_checkpoint(checkpoint.node_id)
+    assert restored.outputs["node"] == {"form": "F" * 3000}
