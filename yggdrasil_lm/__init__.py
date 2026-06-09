@@ -31,6 +31,7 @@ from yggdrasil_lm.core.executor import (
     ExecutionContext,
     ExecutionOptions,
     GraphExecutor,
+    ResumeReadiness,
     TraceEvent,
     print_trace,
 )
@@ -54,7 +55,7 @@ __all__ = [
     "Edge", "EdgeType",
     "END_NODE",
     "GraphStore", "NetworkXGraphStore",
-    "GraphExecutor", "ExecutionContext", "ExecutionOptions", "TraceEvent",
+    "GraphExecutor", "ExecutionContext", "ExecutionOptions", "ResumeReadiness", "TraceEvent",
     "explain_run", "RunExplanation",
     "print_trace", "inspect_trace",
     # Multimodal / image helpers
