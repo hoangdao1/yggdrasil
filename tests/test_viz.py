@@ -647,7 +647,7 @@ class TestVizServerHttpRoutes:
             resp = await client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "/static/app.js" in resp.text
+        assert "/static/js/main.js" in resp.text
 
     @pytest.mark.asyncio
     async def test_static_asset_routes_return_content(self):
@@ -656,7 +656,7 @@ class TestVizServerHttpRoutes:
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            js_resp = await client.get("/static/app.js")
+            js_resp = await client.get("/static/js/main.js")
             css_resp = await client.get("/static/styles.css")
 
         assert js_resp.status_code == 200
@@ -702,7 +702,7 @@ class TestServeTrace:
         mock_server._metadata = {}
         mock_server.port = 19999
 
-        with patch("viz.server.VizServer", return_value=mock_server):
+        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
@@ -720,7 +720,7 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("viz.server.VizServer", return_value=mock_server):
+        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
@@ -739,7 +739,7 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("viz.server.VizServer", return_value=mock_server):
+        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
             with patch("builtins.print"):
                 await serve_trace(ctx, store=store, port=19999, open_browser=False, wait=False)
 

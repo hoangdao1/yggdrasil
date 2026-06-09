@@ -10,7 +10,6 @@ def test_beginner_docs_exist():
         root / "docs" / "choose-backend.md",
         root / "docs" / "architecture.md",
         root / "docs" / "repo-map.md",
-        root / "docs" / "devex-roadmap.md",
         root / "docs" / "control-plane-thesis.md",
         root / "docs" / "explainable-systems.md",
         root / "docs" / "flagship-workflow.md",

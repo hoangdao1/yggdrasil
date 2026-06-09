@@ -250,6 +250,7 @@ For the browser trace viewer specifically, see [Visualizer Web UI](docs/visualiz
 - [examples/parallel_workers.py](examples/parallel_workers.py)
 - [examples/research_pipeline.py](examples/research_pipeline.py)
 - [examples/image_query_and_visual_rag.py](examples/image_query_and_visual_rag.py)
+- [examples/neurosymbolic_pipeline.py](examples/neurosymbolic_pipeline.py) — neural extraction → symbolic Datalog reasoning (with proof) → neural explanation
 
 ### Learn provider setup
 
@@ -258,6 +259,7 @@ For the browser trace viewer specifically, see [Visualizer Web UI](docs/visualiz
 
 ### Learn the platform layer
 
+- [Neurosymbolic Reasoning](docs/neurosymbolic-reasoning.md) — `ReasonerNode` + the built-in Datalog engine
 - [Control Plane Thesis](docs/control-plane-thesis.md)
 - [Architecture](docs/architecture.md)
 - [Repo map](docs/repo-map.md)

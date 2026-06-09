@@ -43,6 +43,7 @@ from yggdrasil_lm.core.nodes import (
     GraphNode,
     NodeType,
     PromptNode,
+    ReasonerNode,
     RouteRule,
     SchemaNode,
     ToolNode,
@@ -1892,6 +1893,8 @@ class GraphExecutor:
             return await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, TransformNode):
             return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
+        if isinstance(node, ReasonerNode):
+            return await self._execute_reasoner(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, PromptNode):
             return node.render()
         return None
@@ -2450,8 +2453,7 @@ class GraphExecutor:
     # Tool execution
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _callable_injection_kwargs(fn: Any, ctx: ExecutionContext) -> dict[str, Any]:
+    def _callable_injection_kwargs(self, fn: Any, ctx: ExecutionContext) -> dict[str, Any]:
         """Extra keyword arguments to pass to a tool/transform callable.
 
         A registered callable opts in to runtime context by declaring an
@@ -2459,6 +2461,7 @@ class GraphExecutor:
 
             def load_form(payload, *, session_id): ...          # gets ctx.session_id
             def upsert(payload, *, ctx): ...                     # gets the ExecutionContext
+            def kg_query(payload, *, store): ...                 # gets the GraphStore
 
         This is how a tool backed by a stateful service (e.g. an MCP client that
         holds per-session in-memory state) routes each call to the right session.
@@ -2477,6 +2480,8 @@ class GraphExecutor:
             kwargs["session_id"] = ctx.session_id
         if "ctx" in params:
             kwargs["ctx"] = ctx
+        if "store" in params:
+            kwargs["store"] = self.store
         return kwargs
 
     async def _execute_tool(
@@ -2585,6 +2590,160 @@ class GraphExecutor:
         if idempotency_key:
             ctx.state.idempotency_cache[idempotency_key] = result
         return result
+
+    async def _execute_reasoner(
+        self,
+        node: ReasonerNode,
+        ctx: ExecutionContext,
+        parent_event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the symbolic Datalog reasoner over facts from state + the KG.
+
+        This is the neural→symbolic bridge: facts produced by an upstream agent
+        (and/or materialised in the knowledge graph) are fed into a sound rule
+        program, and the deductive closure is written back for a downstream
+        agent to consume. No LLM call is made here.
+        """
+        from yggdrasil_lm.symbolic.datalog import (
+            Program,
+            Rule,
+            fact_to_dict,
+            parse_program,
+            rule_from_obj,
+        )
+
+        # 1. Compile the program (string DSL + any pre-parsed rules).
+        rules: list[Rule] = list(parse_program(node.program)) if node.program else []
+        for raw in node.rules:
+            rules.extend(rule_from_obj(raw))
+        program = Program(rules)
+
+        # 2. Gather ground facts.
+        facts = await self._gather_reasoner_facts(node, ctx)
+
+        t0 = time.monotonic()
+
+        def _solve() -> Any:
+            return program.solve(facts, with_proof=node.with_proof)
+
+        solution = await self._call_with_retry(
+            lambda: asyncio.to_thread(_solve),
+            ctx,
+            node=node,
+            policy=node.execution_policy,
+            parent_event_id=parent_event_id,
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        # 3. Project the requested predicates.
+        emitted = solution.derived if node.emit_derived_only else solution.facts
+        if node.query:
+            wanted = set(node.query)
+            emitted = {f for f in emitted if f[0] in wanted}
+
+        if node.fail_on_empty and not emitted:
+            raise RuntimeError(
+                f"ReasonerNode {node.name or node.node_id!r} derived no facts "
+                f"for query {node.query or '*'}"
+            )
+
+        result: dict[str, Any] = {
+            "facts": [fact_to_dict(f) for f in sorted(emitted, key=repr)],
+            "fact_count": len(emitted),
+            "input_count": len(facts),
+            "predicates": sorted({f[0] for f in emitted}),
+        }
+        if node.with_proof:
+            result["proofs"] = [
+                {"fact": fact_to_dict(f), "explanation": solution.explain(f)}
+                for f in sorted(emitted, key=repr)
+                if f in solution.justifications
+            ]
+
+        if node.output_key:
+            ctx.state.data[node.output_key] = result
+
+        self._emit(
+            ctx,
+            "tool_result",
+            node.node_id,
+            node.name or "",
+            payload={
+                "tool_name": node.name or "reasoner",
+                "node_type": str(node.node_type),
+                "output_summary": _summarise(result),
+                "fact_count": result["fact_count"],
+                "input_count": result["input_count"],
+                "predicates": result["predicates"],
+                "success": True,
+                "duration_ms": duration_ms,
+            },
+            parent_event_id=parent_event_id,
+        )
+        return result
+
+    async def _gather_reasoner_facts(
+        self,
+        node: ReasonerNode,
+        ctx: ExecutionContext,
+    ) -> list[Any]:
+        """Collect ground facts for a reasoner from state and the knowledge graph."""
+        src = node.fact_source
+        facts: list[Any] = []
+
+        # (a) Explicit state keys.
+        if src.state_keys:
+            for key in src.state_keys:
+                val = ctx.state.data.get(key)
+                if isinstance(val, list):
+                    facts.extend(val)
+                elif val is not None:
+                    facts.append(val)
+        else:
+            # Fallback: previous node output (if a fact list) then state["facts"].
+            if ctx.outputs:
+                last = list(ctx.outputs.values())[-1]
+                if isinstance(last, list):
+                    facts.extend(last)
+                elif isinstance(last, dict) and isinstance(last.get("facts"), list):
+                    facts.extend(last["facts"])
+            if isinstance(ctx.state.data.get("facts"), list):
+                facts.extend(ctx.state.data["facts"])
+
+        # (b) Knowledge-graph edges as binary facts: edge_type(src, dst).
+        if src.edge_types:
+            name_cache: dict[str, str] = {}
+
+            async def _label(node_id: str) -> str:
+                if node_id in name_cache:
+                    return name_cache[node_id]
+                if not src.use_node_names:
+                    name_cache[node_id] = node_id
+                    return node_id
+                n = await self.store.get_node(node_id)
+                label = (n.name if n and n.name else node_id)
+                name_cache[node_id] = label
+                return label
+
+            for etype in src.edge_types:
+                try:
+                    edge_type = EdgeType(etype)
+                except ValueError:
+                    edge_type = None  # custom edge type stored as string
+                edges = await self.store.list_edges(edge_type=edge_type) if edge_type else []
+                if edge_type is None:
+                    edges = [e for e in await self.store.list_edges() if str(e.edge_type) == etype]
+                pred = etype.lower()
+                for e in edges:
+                    facts.append((pred, await _label(e.src_id), await _label(e.dst_id)))
+
+        # (c) Node membership facts: node_type(name).
+        if src.include_node_facts:
+            for n in await self.store.list_nodes():
+                label = n.name if (src.use_node_names and n.name) else n.node_id
+                facts.append((str(n.node_type), label))
+
+        return facts
 
     async def _chat_once(
         self,

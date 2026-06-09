@@ -26,6 +26,12 @@ This is a quick navigation guide for contributors and LLM coding tools.
 - New provider integration: `yggdrasil/backends/`
 - New operational docs: `docs/`
 
+## Topic Docs
+
+- `docs/neurosymbolic-reasoning.md`: `ReasonerNode` + the built-in Datalog engine, and why Datalog over a plain Python function
+- `docs/explainable-systems.md`: run-time explainability (`explain_run`)
+- `docs/observability.md`: tracing and debugging
+
 ## Best Entry Points For Reading
 
 1. `yggdrasil/app.py`

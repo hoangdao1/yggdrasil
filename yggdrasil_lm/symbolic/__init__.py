@@ -1,0 +1,57 @@
+"""Symbolic reasoning layer for yggdrasil — the *symbolic* half of neurosymbolic AI.
+
+The neural half is the :class:`~yggdrasil_lm.core.nodes.AgentNode` (an LLM that
+handles perception, natural language and fuzzy pattern matching). This package
+supplies the symbolic half: a sound, deterministic inference engine that derives
+new facts from a rule program and a set of ground facts.
+
+The two are glued together by :class:`~yggdrasil_lm.core.nodes.ReasonerNode`,
+which runs a :class:`Program` over facts pulled from workflow state and/or the
+knowledge graph and writes the derived facts back into state for a downstream
+agent to verbalise.
+
+Public API::
+
+    from yggdrasil_lm.symbolic import Program, fact, atoms_to_facts
+
+    prog = Program.parse('''
+        ancestor(?x, ?y) :- parent(?x, ?y).
+        ancestor(?x, ?z) :- parent(?x, ?y), ancestor(?y, ?z).
+    ''')
+    sol = prog.solve([fact("parent", "alice", "bob"), fact("parent", "bob", "carol")])
+    assert ("ancestor", "alice", "carol") in sol.facts
+"""
+
+from __future__ import annotations
+
+from .datalog import (
+    Atom,
+    Comparison,
+    Program,
+    Rule,
+    Solution,
+    Term,
+    Var,
+    DatalogError,
+    StratificationError,
+    UnsafeRuleError,
+    atoms_to_facts,
+    fact,
+    normalise_fact,
+)
+
+__all__ = [
+    "Atom",
+    "Comparison",
+    "Program",
+    "Rule",
+    "Solution",
+    "Term",
+    "Var",
+    "DatalogError",
+    "StratificationError",
+    "UnsafeRuleError",
+    "atoms_to_facts",
+    "fact",
+    "normalise_fact",
+]

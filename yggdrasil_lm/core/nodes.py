@@ -35,6 +35,7 @@ class NodeType(StrEnum):
     GRAPH     = "graph"      # pointer to a sub-graph (meta-graph pattern)
     APPROVAL  = "approval"   # dedicated human approval / inbox step
     TRANSFORM = "transform"  # pure-Python data reshaping step (no LLM)
+    REASONER  = "reasoner"   # symbolic inference step (Datalog) — no LLM
 
 
 class ConstraintRule(BaseModel):
@@ -408,6 +409,79 @@ class TransformNode(Node):
         return self
 
 
+class FactSource(BaseModel):
+    """Declares where a :class:`ReasonerNode` pulls ground facts from.
+
+    A reasoner is the *symbolic* half of a neurosymbolic pipeline: an upstream
+    neural ``AgentNode`` extracts structured facts, this node loads them and runs
+    a sound rule program over them.
+
+    state_keys
+        Keys in ``ctx.state.data`` whose values are lists of facts (tuples,
+        dicts ``{"predicate", "args"}``, lists, or atom-syntax strings). When
+        empty the reasoner falls back to the previous node's output (if it is a
+        list of facts) and to ``state.data["facts"]``.
+    edge_types
+        Knowledge-graph edge types (e.g. ``["MENTIONS", "COVERS"]``) to load as
+        binary facts of the form ``edge_type(src_name, dst_name)``. This turns
+        the typed graph into a logic fact base the rules can reason over.
+    include_node_facts
+        When True, every currently-valid node is emitted as a unary fact
+        ``node_type(node_name)`` so rules can reason about graph membership.
+    use_node_names
+        When True (default) edge/node facts use the node ``name``; otherwise the
+        ``node_id``. Names are friendlier for hand-written rules.
+    """
+
+    state_keys:         list[str] = Field(default_factory=list)
+    edge_types:         list[str] = Field(default_factory=list)
+    include_node_facts: bool      = False
+    use_node_names:     bool      = True
+
+
+class ReasonerNode(Node):
+    """A symbolic inference step backed by the built-in Datalog engine.
+
+    The reasoner runs a deterministic, sound rule ``program`` over ground facts
+    gathered from workflow state and/or the knowledge graph (see
+    :class:`FactSource`), computes the deductive closure, and writes the result
+    back so a downstream agent can verbalise or act on it. No LLM is invoked —
+    this is the verifiable, explainable half of neurosymbolic AI.
+
+    Fields:
+        program       — Datalog source (string DSL). See
+                        ``yggdrasil_lm.symbolic.datalog`` for the syntax.
+        rules         — optional pre-parsed rules (list of dicts or Rule objects)
+                        merged with ``program`` if both are given.
+        fact_source   — where ground facts come from.
+        query         — predicate names to surface in the output. Empty = all
+                        derived facts.
+        emit_derived_only — if True (default) the output ``facts`` list contains
+                        only newly inferred facts, not the input facts.
+        with_proof    — record a justification for each derived fact (adds a
+                        ``proofs`` list to the output, one per derived fact).
+        output_key    — if set, the result dict is also written to
+                        ``ctx.state.data[output_key]`` for downstream nodes.
+        fail_on_empty — raise if the closure derives nothing (useful as a guard).
+    """
+
+    node_type:        NodeType        = Field(default=NodeType.REASONER, frozen=True)
+    program:          str             = ""
+    rules:            list[dict[str, Any]] = Field(default_factory=list)
+    fact_source:      FactSource      = Field(default_factory=FactSource)
+    query:            list[str]       = Field(default_factory=list)
+    emit_derived_only: bool           = True
+    with_proof:       bool            = False
+    output_key:       str             = "inferred"
+    fail_on_empty:    bool            = False
+    execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
+
+    @model_validator(mode="after")
+    def _enforce_type(self) -> "ReasonerNode":
+        object.__setattr__(self, "node_type", NodeType.REASONER)
+        return self
+
+
 class ApprovalNode(Node):
     """A dedicated approval / human-in-the-loop step."""
 
@@ -432,7 +506,7 @@ class ApprovalNode(Node):
 # Union for deserialisation
 # ---------------------------------------------------------------------------
 
-AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNode | ApprovalNode | TransformNode | Node
+AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNode | ApprovalNode | TransformNode | ReasonerNode | Node
 
 
 def node_from_dict(data: dict[str, Any]) -> AnyNode:
@@ -446,6 +520,7 @@ def node_from_dict(data: dict[str, Any]) -> AnyNode:
         NodeType.GRAPH:     GraphNode,
         NodeType.APPROVAL:  ApprovalNode,
         NodeType.TRANSFORM: TransformNode,
+        NodeType.REASONER:  ReasonerNode,
     }
     node_type = NodeType(data.get("node_type", NodeType.CONTEXT))
     cls = _type_map.get(node_type, Node)
