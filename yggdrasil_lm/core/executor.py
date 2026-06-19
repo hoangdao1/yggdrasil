@@ -2181,6 +2181,7 @@ class GraphExecutor:
             ctx, "agent_start", node.node_id, node.name or "",
             payload={
                 "query":   ctx.query,
+                "system":  system,
                 "model":   node.model,
                 "tools":   [t.name for t in composed.tools],
                 "context": [c.name for c in composed.context if c.name],
@@ -2280,9 +2281,10 @@ class GraphExecutor:
                 self._emit(
                     ctx, "agent_end", node.node_id, node.name or "",
                     payload={
-                        "text_summary": _summarise(last_response.text),
-                        "intent":       intent,
-                        "iterations":   iterations,
+                        "text_summary":  _summarise(last_response.text),
+                        "full_response": last_response.text,
+                        "intent":        intent,
+                        "iterations":    iterations,
                     },
                     parent_event_id=agent_event_id,
                     duration_ms=duration_ms,
@@ -2304,9 +2306,10 @@ class GraphExecutor:
         self._emit(
             ctx, "agent_end", node.node_id, node.name or "",
             payload={
-                "text_summary": _summarise(text),
-                "intent":       "default",
-                "iterations":   iterations,
+                "text_summary":  _summarise(text),
+                "full_response": text,
+                "intent":        "default",
+                "iterations":    iterations,
             },
             parent_event_id=agent_event_id,
             duration_ms=duration_ms,
