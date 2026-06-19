@@ -1884,7 +1884,21 @@ class GraphExecutor:
         if isinstance(node, AgentNode):
             return await self._execute_agent(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, ToolNode):
-            return await self._execute_tool(node, ctx)
+            t0 = time.monotonic()
+            result = await self._execute_tool(node, ctx)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            self._emit(
+                ctx, "tool_result", node.node_id, node.name or "",
+                payload={
+                    "tool_name": node.name,
+                    "callable_ref": node.callable_ref,
+                    "output_summary": _summarise(result),
+                    "success": True,
+                    "duration_ms": duration_ms,
+                },
+                parent_event_id=parent_event_id,
+            )
+            return result
         if isinstance(node, ApprovalNode):
             return await self._execute_approval(node, ctx, parent_event_id=parent_event_id)
         if isinstance(node, ContextNode):
