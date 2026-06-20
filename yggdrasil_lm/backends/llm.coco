@@ -190,6 +190,10 @@ class OpenAIBackend(LLMBackend):
         if system:
             oai_messages.append({"role": "system", "content": system})
         oai_messages.extend(_convert_messages_for_openai(messages))
+        # Some models (e.g. Qwen3) require at least one user message.
+        # If the converted history has no user turn, inject a minimal one.
+        if not any(m.get("role") == "user" for m in oai_messages):
+            oai_messages.append({"role": "user", "content": "Begin."})
 
         kwargs: dict[str, Any] = {
             "model":      model,
