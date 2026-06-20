@@ -361,9 +361,9 @@ def _hop_times(
             if e.event_type == "agent_end" and e.duration_ms
         ]
         if agent_ends:
-            end_ns = agent_ends
+            end_ns = (agent_ends
                 |> map$(e -> _to_ns(e.timestamp) + e.duration_ms * 1_000_000)
-                |> max
+                |> max)
         else:
             end_ns = max(timestamps) + 1_000_000  # +1ms fallback
 

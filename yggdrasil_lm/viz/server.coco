@@ -24,6 +24,13 @@ from yggdrasil_lm.observability import explain_run
 if TYPE_CHECKING:
     from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
+# Top-level import so get_type_hints() can resolve WebSocket annotations when
+# Coconut injects `from __future__ import annotations` into compiled output.
+try:
+    from fastapi import WebSocket as WebSocket  # noqa: F401
+except ImportError:
+    pass
+
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
