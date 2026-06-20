@@ -52,8 +52,8 @@ Repository = "https://github.com/hoangdao1/yggdrasil"
 Issues = "https://github.com/hoangdao1/yggdrasil/issues"
 Documentation = "https://github.com/hoangdao1/yggdrasil#readme"
 
-[tool.hatch.build.hooks.coconut]
-path = "hatch_coconut_hook.py"
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.coconut]
 target = "sys"

@@ -3,8 +3,8 @@
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
-class CoconutBuildHook(BuildHookInterface):
-    PLUGIN_NAME = "coconut"
+class CustomBuildHook(BuildHookInterface):
+    PLUGIN_NAME = "custom"
 
     def initialize(self, version: str, build_data: dict) -> None:
         import subprocess
