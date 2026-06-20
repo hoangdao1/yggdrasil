@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# __coconut_hash__ = 0x42b2c40a
+# __coconut_hash__ = 0x12827faf
 
 # Compiled with Coconut version 3.2.0
 
@@ -2536,37 +2536,40 @@ class OpenAIBackend(LLMBackend):  #155 (line in Coconut source)
         if system:  #190 (line in Coconut source)
             oai_messages.append({"role": "system", "content": system})  #191 (line in Coconut source)
         oai_messages.extend(_convert_messages_for_openai(messages))  #192 (line in Coconut source)
-# Some models (e.g. Qwen3) require at least one user message.
-# If the converted history has no user turn, inject a minimal one.
-        if not any((m.get("role") == "user" for m in oai_messages)):  #195 (line in Coconut source)
-            oai_messages.append({"role": "user", "content": "Begin."})  #196 (line in Coconut source)
+# Qwen3 requires the first non-system message to be a user message.
+# After tool calls extend_messages returns [assistant, tool, ...] with no leading
+# user turn, so inject one right after the system message when needed.
+        system_count = sum((1 for m in oai_messages if m.get("role") == "system"))  #196 (line in Coconut source)
+        first_non_system = oai_messages[system_count] if len(oai_messages) > system_count else None  #197 (line in Coconut source)
+        if first_non_system is None or first_non_system.get("role") != "user":  #198 (line in Coconut source)
+            oai_messages.insert(system_count, {"role": "user", "content": "Begin."})  #199 (line in Coconut source)
 
-        kwargs: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": oai_messages}  #198 (line in Coconut source)
-        if tools:  #203 (line in Coconut source)
-            kwargs["tools"] = (list)((map)(lambda t: _anthropic_to_openai_tool(t), tools))  #204 (line in Coconut source)
+        kwargs: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": oai_messages}  #201 (line in Coconut source)
+        if tools:  #206 (line in Coconut source)
+            kwargs["tools"] = (list)((map)(lambda t: _anthropic_to_openai_tool(t), tools))  #207 (line in Coconut source)
 
-        response = await self._client.chat.completions.create(**kwargs)  #206 (line in Coconut source)
-        choice = response.choices[0]  #207 (line in Coconut source)
-        msg = choice.message  #208 (line in Coconut source)
+        response = await self._client.chat.completions.create(**kwargs)  #209 (line in Coconut source)
+        choice = response.choices[0]  #210 (line in Coconut source)
+        msg = choice.message  #211 (line in Coconut source)
 
-        text = msg.content or ""  #210 (line in Coconut source)
-        tool_calls: list[ToolCall] = []  #211 (line in Coconut source)
-        if msg.tool_calls:  #212 (line in Coconut source)
-            for tc in msg.tool_calls:  #213 (line in Coconut source)
-                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, input=json.loads(tc.function.arguments)))  #214 (line in Coconut source)
+        text = msg.content or ""  #213 (line in Coconut source)
+        tool_calls: list[ToolCall] = []  #214 (line in Coconut source)
+        if msg.tool_calls:  #215 (line in Coconut source)
+            for tc in msg.tool_calls:  #216 (line in Coconut source)
+                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, input=json.loads(tc.function.arguments)))  #217 (line in Coconut source)
 
-        stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"  #220 (line in Coconut source)
-        return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason, _raw=msg)  #221 (line in Coconut source)
+        stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"  #223 (line in Coconut source)
+        return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason, _raw=msg)  #224 (line in Coconut source)
 
 
-    def extend_messages(self, messages: list[dict[str, Any]], response: LLMResponse, tool_results: list[ToolResult],) -> list[dict[str, Any]]:  #223 (line in Coconut source)
-        raw_msg = response._raw  #229 (line in Coconut source)
-        assistant_msg: dict[str, Any] = {"role": "assistant", "content": raw_msg.content}  #230 (line in Coconut source)
-        if raw_msg.tool_calls:  #234 (line in Coconut source)
-            assistant_msg["tool_calls"] = [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in raw_msg.tool_calls]  #235 (line in Coconut source)
+    def extend_messages(self, messages: list[dict[str, Any]], response: LLMResponse, tool_results: list[ToolResult],) -> list[dict[str, Any]]:  #226 (line in Coconut source)
+        raw_msg = response._raw  #232 (line in Coconut source)
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": raw_msg.content}  #233 (line in Coconut source)
+        if raw_msg.tool_calls:  #237 (line in Coconut source)
+            assistant_msg["tool_calls"] = [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in raw_msg.tool_calls]  #238 (line in Coconut source)
 
-        tool_msgs = [{"role": "tool", "tool_call_id": tr.tool_call_id, "content": tr.content} for tr in tool_results]  #247 (line in Coconut source)
-        return messages + [assistant_msg,] + tool_msgs  #255 (line in Coconut source)
+        tool_msgs = [{"role": "tool", "tool_call_id": tr.tool_call_id, "content": tr.content} for tr in tool_results]  #250 (line in Coconut source)
+        return messages + [assistant_msg,] + tool_msgs  #258 (line in Coconut source)
 
 
 # ---------------------------------------------------------------------------
@@ -2574,74 +2577,74 @@ class OpenAIBackend(LLMBackend):  #155 (line in Coconut source)
 # ---------------------------------------------------------------------------
 
 
-def _anthropic_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:  #262 (line in Coconut source)
-    """Convert a tool_schema() dict (Anthropic format) to OpenAI function tool format."""  #263 (line in Coconut source)
-    return {"type": "function", "function": {"name": tool["name"], "description": tool.get("description", ""), "parameters": tool.get("input_schema", {"type": "object", "properties": {}})}}  #264 (line in Coconut source)
+def _anthropic_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:  #265 (line in Coconut source)
+    """Convert a tool_schema() dict (Anthropic format) to OpenAI function tool format."""  #266 (line in Coconut source)
+    return {"type": "function", "function": {"name": tool["name"], "description": tool.get("description", ""), "parameters": tool.get("input_schema", {"type": "object", "properties": {}})}}  #267 (line in Coconut source)
 
 
 
-def _anthropic_to_openai_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:  #274 (line in Coconut source)
+def _anthropic_to_openai_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:  #277 (line in Coconut source)
     """Convert Anthropic content blocks to OpenAI-compatible content blocks.
 
     Anthropic image blocks use ``{"type": "image", "source": {...}}``; OpenAI
     uses ``{"type": "image_url", "image_url": {"url": "..."}}``.  Text blocks
     pass through unchanged.  Unknown block types are dropped.
-    """  #280 (line in Coconut source)
-    result: list[dict[str, Any]] = []  #281 (line in Coconut source)
-    for block in content:  #282 (line in Coconut source)
-        _coconut_case_match_to_1 = block.get("type")  #283 (line in Coconut source)
-        _coconut_case_match_check_1 = False  #283 (line in Coconut source)
-        if _coconut_case_match_to_1 == "text":  #283 (line in Coconut source)
-            _coconut_case_match_check_1 = True  #283 (line in Coconut source)
-        if _coconut_case_match_check_1:  #283 (line in Coconut source)
-            result.append({"type": "text", "text": block.get("text", "")})  #285 (line in Coconut source)
-        if not _coconut_case_match_check_1:  #286 (line in Coconut source)
-            if _coconut_case_match_to_1 == "image":  #286 (line in Coconut source)
-                _coconut_case_match_check_1 = True  #286 (line in Coconut source)
-            if _coconut_case_match_check_1:  #286 (line in Coconut source)
-                source = block.get("source", {})  #287 (line in Coconut source)
-                _coconut_case_match_to_0 = source.get("type")  #288 (line in Coconut source)
-                _coconut_case_match_check_0 = False  #288 (line in Coconut source)
-                if _coconut_case_match_to_0 == "base64":  #288 (line in Coconut source)
-                    _coconut_case_match_check_0 = True  #288 (line in Coconut source)
-                if _coconut_case_match_check_0:  #288 (line in Coconut source)
-                    url = "data:{_coconut_format_0};base64,{_coconut_format_1}".format(_coconut_format_0=(source['media_type']), _coconut_format_1=(source['data']))  #290 (line in Coconut source)
-                    result.append({"type": "image_url", "image_url": {"url": url}})  #291 (line in Coconut source)
-                if not _coconut_case_match_check_0:  #292 (line in Coconut source)
-                    if _coconut_case_match_to_0 == "url":  #292 (line in Coconut source)
-                        _coconut_case_match_check_0 = True  #292 (line in Coconut source)
-                    if _coconut_case_match_check_0:  #292 (line in Coconut source)
-                        url = source["url"]  #293 (line in Coconut source)
-                        result.append({"type": "image_url", "image_url": {"url": url}})  #294 (line in Coconut source)
+    """  #283 (line in Coconut source)
+    result: list[dict[str, Any]] = []  #284 (line in Coconut source)
+    for block in content:  #285 (line in Coconut source)
+        _coconut_case_match_to_1 = block.get("type")  #286 (line in Coconut source)
+        _coconut_case_match_check_1 = False  #286 (line in Coconut source)
+        if _coconut_case_match_to_1 == "text":  #286 (line in Coconut source)
+            _coconut_case_match_check_1 = True  #286 (line in Coconut source)
+        if _coconut_case_match_check_1:  #286 (line in Coconut source)
+            result.append({"type": "text", "text": block.get("text", "")})  #288 (line in Coconut source)
+        if not _coconut_case_match_check_1:  #289 (line in Coconut source)
+            if _coconut_case_match_to_1 == "image":  #289 (line in Coconut source)
+                _coconut_case_match_check_1 = True  #289 (line in Coconut source)
+            if _coconut_case_match_check_1:  #289 (line in Coconut source)
+                source = block.get("source", {})  #290 (line in Coconut source)
+                _coconut_case_match_to_0 = source.get("type")  #291 (line in Coconut source)
+                _coconut_case_match_check_0 = False  #291 (line in Coconut source)
+                if _coconut_case_match_to_0 == "base64":  #291 (line in Coconut source)
+                    _coconut_case_match_check_0 = True  #291 (line in Coconut source)
+                if _coconut_case_match_check_0:  #291 (line in Coconut source)
+                    url = "data:{_coconut_format_0};base64,{_coconut_format_1}".format(_coconut_format_0=(source['media_type']), _coconut_format_1=(source['data']))  #293 (line in Coconut source)
+                    result.append({"type": "image_url", "image_url": {"url": url}})  #294 (line in Coconut source)
                 if not _coconut_case_match_check_0:  #295 (line in Coconut source)
-                    _coconut_case_match_check_0 = True  #295 (line in Coconut source)
+                    if _coconut_case_match_to_0 == "url":  #295 (line in Coconut source)
+                        _coconut_case_match_check_0 = True  #295 (line in Coconut source)
                     if _coconut_case_match_check_0:  #295 (line in Coconut source)
-                        pass  # unsupported source type — skip  #296 (line in Coconut source)
-        if not _coconut_case_match_check_1:  #297 (line in Coconut source)
-            if _coconut_case_match_to_1 == "image_url":  #297 (line in Coconut source)
-                _coconut_case_match_check_1 = True  #297 (line in Coconut source)
-            if _coconut_case_match_check_1:  #297 (line in Coconut source)
-                result.append(block)  #299 (line in Coconut source)
+                        url = source["url"]  #296 (line in Coconut source)
+                        result.append({"type": "image_url", "image_url": {"url": url}})  #297 (line in Coconut source)
+                if not _coconut_case_match_check_0:  #298 (line in Coconut source)
+                    _coconut_case_match_check_0 = True  #298 (line in Coconut source)
+                    if _coconut_case_match_check_0:  #298 (line in Coconut source)
+                        pass  # unsupported source type — skip  #299 (line in Coconut source)
         if not _coconut_case_match_check_1:  #300 (line in Coconut source)
-            _coconut_case_match_check_1 = True  #300 (line in Coconut source)
+            if _coconut_case_match_to_1 == "image_url":  #300 (line in Coconut source)
+                _coconut_case_match_check_1 = True  #300 (line in Coconut source)
             if _coconut_case_match_check_1:  #300 (line in Coconut source)
-                pass  # Other block types (document, tool_result, etc.) are not converted  #301 (line in Coconut source)
-    return result  #302 (line in Coconut source)
+                result.append(block)  #302 (line in Coconut source)
+        if not _coconut_case_match_check_1:  #303 (line in Coconut source)
+            _coconut_case_match_check_1 = True  #303 (line in Coconut source)
+            if _coconut_case_match_check_1:  #303 (line in Coconut source)
+                pass  # Other block types (document, tool_result, etc.) are not converted  #304 (line in Coconut source)
+    return result  #305 (line in Coconut source)
 
 
 
-def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:  #305 (line in Coconut source)
-    """Return a copy of *messages* with list-typed content converted to OpenAI format."""  #306 (line in Coconut source)
-    return [{**msg, "content": _anthropic_to_openai_content(msg["content"])} if isinstance(msg.get("content"), list) else msg for msg in messages]  #307 (line in Coconut source)
+def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:  #308 (line in Coconut source)
+    """Return a copy of *messages* with list-typed content converted to OpenAI format."""  #309 (line in Coconut source)
+    return [{**msg, "content": _anthropic_to_openai_content(msg["content"])} if isinstance(msg.get("content"), list) else msg for msg in messages]  #310 (line in Coconut source)
 
 
 
-def default_backend() -> LLMBackend:  #315 (line in Coconut source)
-    """Return the default Anthropic backend when the local environment is configured."""  #316 (line in Coconut source)
-    api_key = os.getenv("ANTHROPIC_API_KEY")  #317 (line in Coconut source)
-    if not api_key:  #318 (line in Coconut source)
-        raise RuntimeError("No default LLM backend is configured. Set ANTHROPIC_API_KEY and install 'yggdrasil[anthropic]', or pass backend=... explicitly.")  #319 (line in Coconut source)
-    try:  #323 (line in Coconut source)
-        return AnthropicBackend(api_key=api_key)  #324 (line in Coconut source)
-    except ImportError as exc:  #325 (line in Coconut source)
-        raise RuntimeError("The default Anthropic backend is not installed. Install 'yggdrasil[anthropic]' or pass backend=... explicitly.") from exc  #326 (line in Coconut source)
+def default_backend() -> LLMBackend:  #318 (line in Coconut source)
+    """Return the default Anthropic backend when the local environment is configured."""  #319 (line in Coconut source)
+    api_key = os.getenv("ANTHROPIC_API_KEY")  #320 (line in Coconut source)
+    if not api_key:  #321 (line in Coconut source)
+        raise RuntimeError("No default LLM backend is configured. Set ANTHROPIC_API_KEY and install 'yggdrasil[anthropic]', or pass backend=... explicitly.")  #322 (line in Coconut source)
+    try:  #326 (line in Coconut source)
+        return AnthropicBackend(api_key=api_key)  #327 (line in Coconut source)
+    except ImportError as exc:  #328 (line in Coconut source)
+        raise RuntimeError("The default Anthropic backend is not installed. Install 'yggdrasil[anthropic]' or pass backend=... explicitly.") from exc  #329 (line in Coconut source)
