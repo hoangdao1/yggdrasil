@@ -1766,9 +1766,11 @@ class GraphExecutor:
             wave_ms = int((time.monotonic() - t0) * 1000)
 
             for (nid, _), result, hop_event in zip(valid_nodes, results, hop_events):
-                ctx.outputs[nid] = result
-                ctx.state.data["_last_node_id"] = nid
-                ctx.state.data["_last_output"] = result
+                # Don't store a paused subgraph's output — it will re-run on resume.
+                if not ctx.is_paused():
+                    ctx.outputs[nid] = result
+                    ctx.state.data["_last_node_id"] = nid
+                    ctx.state.data["_last_output"] = result
                 hop_event.payload["summary"] = _summarise(result)
                 hop_event.payload["wave_ms"] = wave_ms
                 sorter.done(nid)
