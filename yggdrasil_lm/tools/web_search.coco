@@ -1,7 +1,5 @@
 """Built-in web search tool."""
 
-from __future__ import annotations
-
 from typing import Any
 
 
@@ -34,9 +32,8 @@ def _parse_ddg_html(html: str, max_results: int = 5) -> list[str]:
 
     titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]+>([^<]+)<', html, re.S)
     snippets = re.findall(r'class="result__snippet"[^>]*>([^<]+)<', html, re.S)
-    out = []
-    for i, (title, snippet) in enumerate(zip(titles, snippets)):
-        if i >= max_results:
-            break
-        out.append(f"**{title.strip()}**\n{snippet.strip()}")
-    return out
+    return [
+        f"**{title.strip()}**\n{snippet.strip()}"
+        for i, (title, snippet) in enumerate(zip(titles, snippets))
+        if i < max_results
+    ]

@@ -4,8 +4,6 @@ This module keeps the core graph primitives available while offering a smaller,
 task-oriented surface for first-time users and code-generation tools.
 """
 
-from __future__ import annotations
-
 import base64
 import mimetypes
 from pathlib import Path
@@ -173,7 +171,9 @@ def create_subgraph(
         scope_outputs: keep inner outputs scoped (default) or merge into parent.
     """
     entry_id = entry if isinstance(entry, str) else entry.node_id
-    exit_id  = exit  if isinstance(exit, str)  else (exit.node_id if exit is not None else "")
+    exit_id = (
+        exit if isinstance(exit, str) else (exit.node_id if exit is not None else "")
+    )
     return GraphNode(
         name=name,
         description=description,
@@ -220,18 +220,19 @@ def create_executor(
         return GraphExecutor(store)
 
     provider_key = provider.strip().lower()
-    if provider_key == "anthropic":
-        return GraphExecutor(store, backend=AnthropicBackend(**backend_kwargs))
-    if provider_key in {"claude-code", "claude_code", "claudecode"}:
-        from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
-
-        return ClaudeCodeExecutor(store, **backend_kwargs)
-    if provider_key in {"openai", "openai-compatible", "compatible"}:
-        return GraphExecutor(store, backend=OpenAIBackend(**backend_kwargs))
-    raise ValueError(
-        f"Unknown provider: {provider!r}. Use 'anthropic', 'claude-code', "
-        "'compatible', or pass backend=..."
-    )
+    match provider_key:
+        case "anthropic":
+            return GraphExecutor(store, backend=AnthropicBackend(**backend_kwargs))
+        case "claude-code" | "claude_code" | "claudecode":
+            from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
+            return ClaudeCodeExecutor(store, **backend_kwargs)
+        case "openai" | "openai-compatible" | "compatible":
+            return GraphExecutor(store, backend=OpenAIBackend(**backend_kwargs))
+        case _:
+            raise ValueError(
+                f"Unknown provider: {provider!r}. Use 'anthropic', 'claude-code', "
+                "'compatible', or pass backend=..."
+            )
 
 
 class GraphApp:
@@ -506,11 +507,11 @@ class GraphApp:
 
     async def run_subgraph(
         self,
-        subgraph:  GraphNode | str,
+        subgraph: GraphNode | str,
         *,
-        inputs:    dict[str, Any] | None = None,
-        query:     str | None            = None,
-        **kwargs:  Any,
+        inputs: dict[str, Any] | None = None,
+        query: str | None = None,
+        **kwargs: Any,
     ):
         """Run a ``GraphNode`` in isolation — the testing / unit-of-work entry point.
 
@@ -542,7 +543,7 @@ class GraphApp:
         self,
         subgraph: GraphNode | str,
         *,
-        inputs:   dict[str, Any] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Resolve a sub-graph's wiring without executing — for fast smoke tests.
 
@@ -558,9 +559,11 @@ class GraphApp:
         return await self.executor.resolve_subgraph_inputs(self._node_id(subgraph), ctx)
 
     def _node_id(self, node: NodeRef) -> str:
-        if isinstance(node, str):
-            return node
-        return node.node_id
+        match node:
+            case str():
+                return node
+            case _:
+                return node.node_id
 
 
 __all__ = [

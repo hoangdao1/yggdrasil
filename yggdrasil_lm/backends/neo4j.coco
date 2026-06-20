@@ -15,8 +15,6 @@ Features over NetworkXGraphStore:
 - Native vector index (Neo4j 5.x+) for fast ANN search
 """
 
-from __future__ import annotations
-
 import json
 from typing import Any
 
@@ -84,7 +82,7 @@ class Neo4jGraphStore(GraphStore):
             record = await result.single()
             if record is None:
                 return None
-            return self._deserialise_node(dict(record["props"]))
+            return record["props"] |> dict |> self._deserialise_node
 
     async def get_edge(self, edge_id: str) -> Edge | None:
         async with self._driver.session(database=self._db) as session:
@@ -95,7 +93,7 @@ class Neo4jGraphStore(GraphStore):
             record = await result.single()
             if record is None:
                 return None
-            return Edge.model_validate(dict(record["props"]))
+            return record["props"] |> dict |> Edge.model_validate
 
     async def get_edges(
         self,
@@ -106,19 +104,20 @@ class Neo4jGraphStore(GraphStore):
     ) -> list[Edge]:
         rel = f":{edge_type.upper()}" if edge_type else ""
 
-        if direction == "out":
-            pattern = f"(n:Node {{node_id: $node_id}})-[r{rel}]->()"
-        elif direction == "in":
-            pattern = f"()-[r{rel}]->(n:Node {{node_id: $node_id}})"
-        else:
-            pattern = f"(n:Node {{node_id: $node_id}})-[r{rel}]-()"
+        match direction:
+            case "out":
+                pattern = f"(n:Node {{node_id: $node_id}})-[r{rel}]->()"
+            case "in":
+                pattern = f"()-[r{rel}]->(n:Node {{node_id: $node_id}})"
+            case _:
+                pattern = f"(n:Node {{node_id: $node_id}})-[r{rel}]-()"
 
         cypher = f"MATCH {pattern} RETURN properties(r) AS props"
         async with self._driver.session(database=self._db) as session:
             result = await session.run(cypher, node_id=node_id)
             edges = []
             async for record in result:
-                edge = Edge.model_validate(dict(record["props"]))
+                edge = record["props"] |> dict |> Edge.model_validate
                 if only_valid and not edge.is_valid:
                     continue
                 edges.append(edge)
@@ -140,7 +139,7 @@ class Neo4jGraphStore(GraphStore):
             result = await session.run(cypher, node_id=node_id)
             nodes = []
             async for record in result:
-                node = self._deserialise_node(dict(record["props"]))
+                node = record["props"] |> dict |> self._deserialise_node
                 if only_valid and not node.is_valid:
                     continue
                 nodes.append(node)
@@ -173,7 +172,7 @@ class Neo4jGraphStore(GraphStore):
             result = await session.run(cypher, top_k=top_k, embedding=embedding)
             results = []
             async for record in result:
-                node = self._deserialise_node(dict(record["props"]))
+                node = record["props"] |> dict |> self._deserialise_node
                 if only_valid and not node.is_valid:
                     continue
                 results.append((node, float(record["score"])))
@@ -211,7 +210,7 @@ class Neo4jGraphStore(GraphStore):
             result = await session.run(cypher)
             nodes = []
             async for record in result:
-                node = self._deserialise_node(dict(record["props"]))
+                node = record["props"] |> dict |> self._deserialise_node
                 if only_valid and not node.is_valid:
                     continue
                 nodes.append(node)

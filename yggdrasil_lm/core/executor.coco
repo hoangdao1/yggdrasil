@@ -14,8 +14,6 @@ Execution strategies:
 - topological : DAG waves — graphlib.TopologicalSorter for explicit pipelines
 """
 
-from __future__ import annotations
-
 import asyncio
 import graphlib
 import inspect
@@ -91,9 +89,11 @@ QueryContent = str | list[dict[str, Any]]
 
 def _query_text(query: QueryContent) -> str:
     """Extract the plain-text portion of a query for routing and context scoring."""
-    if isinstance(query, str):
-        return query
-    return " ".join(block.get("text", "") for block in query if block.get("type") == "text")
+    match query:
+        case str():
+            return query
+        case _:
+            return " ".join(block.get("text", "") for block in query if block.get("type") == "text")
 
 
 @dataclass
@@ -123,7 +123,7 @@ class TraceEvent:
     node_name:       str
     timestamp:       datetime
     payload:         dict[str, Any]
-    event_id:        str       = field(default_factory=lambda: str(uuid.uuid4()))
+    event_id:        str        = field(default_factory=-> str(uuid.uuid4()))
     parent_event_id: str | None = None
     duration_ms:     int | None = None
 
@@ -132,17 +132,12 @@ class TraceEvent:
 # RoutingDecision — white-box routing result
 # ---------------------------------------------------------------------------
 
-@dataclass
-class RoutingDecision:
+data RoutingDecision(agent_id, reason, confidence):
     """LLM routing decision with explicit reasoning and confidence.
 
     Returned by GraphExecutor.route() / plan() so callers can inspect and
     debug every dispatch choice before (or instead of) executing.
     """
-
-    agent_id:   str    # node_id of the selected AgentNode
-    reason:     str    # one-sentence explanation from the LLM router
-    confidence: float  # 0.0–1.0
 
     @property
     def low_confidence_warning(self) -> str | None:
@@ -161,18 +156,14 @@ class RoutingDecision:
 
 @dataclass
 class AgentResult:
-    """Execution envelope returned by GraphExecutor.execute().
+    """Execution envelope returned by GraphExecutor.execute()."""
 
-    Bundles the agent's output with the routing metadata that produced it,
-    making the full dispatch chain observable and debuggable.
-    """
-
-    routed_to:              str        # agent node_id that was executed
-    reason:                 str        # why this agent was chosen
-    confidence:             float      # router confidence (1.0 for direct calls)
-    context_injected:       list[str]  # ContextNode names in the system prompt
-    result:                 str        # agent output text
-    low_confidence_warning: str | None = None  # set when confidence < 0.7
+    routed_to:              str
+    reason:                 str
+    confidence:             float
+    context_injected:       list[str]
+    result:                 str
+    low_confidence_warning: str | None = None
 
 
 @dataclass
@@ -182,7 +173,7 @@ class WorkflowPause:
     reason: str
     node_id: str
     node_name: str = ""
-    token: str = field(default_factory=lambda: str(uuid.uuid4()))
+    token: str = field(default_factory=-> str(uuid.uuid4()))
     waiting_for: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -200,7 +191,7 @@ class ApprovalTask:
     waiting_for: str | None = None
     due_at: datetime | None = None
     escalation_target: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=-> datetime.now(timezone.utc))
     resolved_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -233,18 +224,15 @@ class ExecutionContext:
     """
 
     query:      QueryContent
-    session_id: str                   = field(default_factory=lambda: str(uuid.uuid4()))
-    outputs:    dict[str, Any]        = field(default_factory=dict)   # node_id → output
-    trace:      list[TraceEvent]      = field(default_factory=list)   # structured events
+    session_id: str                   = field(default_factory=-> str(uuid.uuid4()))
+    outputs:    dict[str, Any]        = field(default_factory=dict)
+    trace:      list[TraceEvent]      = field(default_factory=list)
     max_hops:   int                   = 20
     hop_count:  int                   = 0
 
-    # Optional: inject additional context into every LLM call
     extra_messages: list[dict[str, Any]] = field(default_factory=list)
     state: WorkflowState = field(default_factory=WorkflowState)
     allowed_tools: set[str] | None = None
-    # Stack of GraphNode ids currently being executed — used to detect cycles
-    # in nested sub-graphs. Not serialised in snapshots (it's per-call state).
     _active_subgraphs: list[str] = field(default_factory=list)
 
     def is_paused(self) -> bool:
@@ -516,7 +504,7 @@ class ContextNavigator:
             session_id=session_id,
         )
 
-        ranked = sorted(expanded.values(), key=lambda s: s.score, reverse=True)
+        ranked = sorted(expanded.values(), key=s -> s.score, reverse=True)
         return self._pack_contexts(ranked)
 
     async def _expand_contexts(
@@ -721,16 +709,7 @@ class ComposedAgent:
         return "\n".join(parts)
 
     def build_image_context_blocks(self) -> list[dict[str, Any]]:
-        """Return Anthropic-format image blocks for image context nodes.
-
-        ContextNodes with ``content_type == "image"`` are surfaced as inline
-        image blocks in the user message (visual RAG) rather than as text in
-        the system prompt.  Each such node stores either a URL or base64 data:
-
-        - ``attributes["image_source"] == "url"``  → ``content`` is a URL.
-        - ``attributes["image_source"] == "base64"`` → ``content`` is base64
-          data; ``attributes["media_type"]`` provides the MIME type.
-        """
+        """Return Anthropic-format image blocks for image context nodes."""
         blocks: list[dict[str, Any]] = []
         for ctx in self.context:
             if ctx.content_type != "image":
@@ -838,9 +817,8 @@ class AgentComposer:
     ) -> ComposedAgent:
         node_id = agent_node.node_id
 
-        # 1. Discover tools via HAS_TOOL edges (order by edge weight desc)
         tool_edges = await self.store.get_edges(node_id, edge_type=EdgeType.HAS_TOOL)
-        tool_edges.sort(key=lambda e: e.weight, reverse=True)
+        tool_edges.sort(key=e -> e.weight, reverse=True)
         raw_tool_nodes = await asyncio.gather(*[self.store.get_node(e.dst_id) for e in tool_edges])
         tools: list[ToolNode] = [
             n for n in raw_tool_nodes if isinstance(n, ToolNode) and n.is_valid
@@ -855,11 +833,9 @@ class AgentComposer:
         )
         context = [selection.context for selection in context_selection]
 
-        # 3. Discover prompt template via HAS_PROMPT edge (first match)
         prompt_nodes = await self.store.neighbors(node_id, edge_type=EdgeType.HAS_PROMPT)
         prompt = next((n for n in prompt_nodes if isinstance(n, PromptNode)), None)
 
-        # 4. Discover delegate agents via DELEGATES_TO edges
         delegate_nodes = await self.store.neighbors(node_id, edge_type=EdgeType.DELEGATES_TO)
         delegates = [n for n in delegate_nodes if isinstance(n, AgentNode) and n.is_valid]
 
@@ -911,33 +887,13 @@ Respond with JSON only:
 # ExecutionOptions — security and tenancy controls for run()
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ExecutionOptions:
-    """Runtime controls for GraphExecutor.run().
-
-    Pass as ``options=ExecutionOptions(...)`` to customize execution.
-    """
-
-    allowed_tools: set[str] | None = None
+data ExecutionOptions(allowed_tools=None):
+    """Runtime controls for GraphExecutor.run()."""
 
 
 @dataclass
 class ResumeReadiness:
-    """Diagnosis of whether a checkpointed/paused context is safe to resume.
-
-    Produced by ``GraphExecutor.inspect_resume()`` so a caller (e.g. a web
-    request handler) can surface problems to a human *before* relaunching a
-    long-running workflow:
-
-    - ``is_stale``      — no trace activity for longer than ``stale_after_seconds``;
-                          the previous run very likely crashed (process kill,
-                          context exhaustion, dropped connection) rather than
-                          pausing cleanly. Confirm with the user before resuming.
-    - ``unrecoverable`` — required outputs absent from BOTH ``ctx.outputs`` and
-                          ``ctx.state.data``; resuming would re-derive them from
-                          nothing or fail. The caller should re-run the step that
-                          produces each one.
-    """
+    """Diagnosis of whether a checkpointed/paused context is safe to resume."""
 
     status: str
     is_paused: bool
@@ -984,8 +940,6 @@ class GraphExecutor:
         self._backend     = backend or default_backend()
         self._router_model = router_model
 
-        # callable_ref → async/sync Python callable
-        # Populated via register_tool() or via ToolRegistry
         self._tool_fns: dict[str, Any] = {}
         self._event_hooks: list[Callable[[TraceEvent, ExecutionContext], Any]] = []
 
@@ -1048,22 +1002,7 @@ class GraphExecutor:
         options: ExecutionOptions | None = None,
         **kwargs: Any,
     ) -> ExecutionContext:
-        """Execute a query starting from entry_node_id.
-
-        strategy:
-          "sequential"  — DFS: run → route → next (default for agent chains)
-          "parallel"    — BFS: fan-out to all DELEGATES_TO targets concurrently
-          "topological" — DAG waves using graphlib.TopologicalSorter
-
-        extra_messages:
-          Optional list of {"role": ..., "content": ...} dicts prepended to the
-          message history before the main query.  Used by BatchExecutor to inject
-          per-item context without mutating the graph.
-
-        options:
-          Runtime controls. Pass as ``options=ExecutionOptions(...)``
-          to override allowed_tools.
-        """
+        """Execute a query starting from entry_node_id."""
         ctx = execution_context or ExecutionContext(query=query, max_hops=max_hops)
         ctx.query = query
         ctx.max_hops = max_hops
@@ -1073,9 +1012,8 @@ class GraphExecutor:
             ctx.state.data.update(state)
         if allowed_tools is not None:
             ctx.allowed_tools = set(allowed_tools)
-        if options is not None:
-            if options.allowed_tools is not None:
-                ctx.allowed_tools = options.allowed_tools
+        if options is not None and options.allowed_tools is not None:
+            ctx.allowed_tools = options.allowed_tools
         try:
             entry = await self.store.get_node(entry_node_id)
             if entry is None:
@@ -1084,14 +1022,15 @@ class GraphExecutor:
                     "Hint: use `agent.node_id` (not `agent.name`) as the entry_node_id,\n"
                     "or call `await store.list_nodes()` to inspect what is in the store."
                 )
-            if strategy == "sequential":
-                await self._run_sequential(entry, ctx)
-            elif strategy == "parallel":
-                await self._run_parallel(entry, ctx)
-            elif strategy == "topological":
-                await self._run_topological(entry_node_id, ctx)
-            else:
-                raise ValueError(f"Unknown strategy: {strategy!r}")
+            match strategy:
+                case "sequential":
+                    await self._run_sequential(entry, ctx)
+                case "parallel":
+                    await self._run_parallel(entry, ctx)
+                case "topological":
+                    await self._run_topological(entry_node_id, ctx)
+                case _:
+                    raise ValueError(f"Unknown strategy: {strategy!r}")
         except Exception as exc:
             _log.error(
                 "Executor fatal error [session=%s node=%s]: %s",
@@ -1149,18 +1088,7 @@ class GraphExecutor:
         required_outputs: list[str] | None = None,
         now: datetime | None = None,
     ) -> ResumeReadiness:
-        """Diagnose whether ``ctx`` is safe to resume — no side effects.
-
-        Call this before ``resume()`` / ``resume_from_checkpoint()`` to detect a
-        crashed (not cleanly paused) run and any outputs that can no longer be
-        recovered, surfacing both a stale-checkpoint signal and an unrecoverable
-        list so a caller can confirm with a human before relaunching.
-
-        ``stale_after_seconds`` defaults to 20 minutes. Liveness is measured from
-        the most recent trace event — the last point the run made progress.
-        ``required_outputs`` are looked up in both ``ctx.outputs`` (by node id)
-        and ``ctx.state.data`` (by key). ``now`` is injectable for testing.
-        """
+        """Diagnose whether ``ctx`` is safe to resume — no side effects."""
         last_event_at = max((e.timestamp for e in ctx.trace), default=None)
         if last_event_at is None:
             seconds_since: float | None = None
@@ -1201,24 +1129,7 @@ class GraphExecutor:
         checkpoint: bool = True,
         strategy: str = "sequential",
     ) -> Any:
-        """Run an agent over a list of items with concurrency control.
-
-        Convenience wrapper over BatchExecutor.  Prefer this over constructing
-        ``BatchExecutor`` directly.
-
-        Example::
-
-            run = await executor.batch(
-                agent.node_id,
-                documents,
-                query_fn=lambda doc: f"Summarise: {doc['title']}",
-                context_fn=lambda doc: doc["body"],
-                on_progress=lambda r: print(f"{r.progress:.0%}"),
-            )
-            print(run.status)
-
-        Returns a ``BatchRun`` dataclass.
-        """
+        """Run an agent over a list of items with concurrency control."""
         import warnings
         from yggdrasil_lm.batch import BatchExecutor
         with warnings.catch_warnings():
@@ -1242,17 +1153,7 @@ class GraphExecutor:
         name: str = "Execution checkpoint",
         max_inline_chars: int | None = None,
     ) -> ContextNode:
-        """Persist a resumable execution snapshot as a runtime context node.
-
-        ``max_inline_chars`` (opt-in; default ``None`` = inline everything, the
-        historical behaviour) offloads oversized entries. A single node output
-        or ``state.data`` value whose JSON encoding exceeds the limit is written
-        to its own sibling blob ``ContextNode`` and replaced in the snapshot with
-        a ``{"$ygg_blob": <node_id>}`` reference. This keeps the checkpoint node
-        compact regardless of how large the carried form/blob payloads grow —
-        without altering the live ``ctx.outputs`` shape during execution.
-        ``load_checkpoint`` transparently rehydrates the references.
-        """
+        """Persist a resumable execution snapshot as a runtime context node."""
         snap = ctx.snapshot()
         if max_inline_chars is not None:
             snap = await self._offload_snapshot_blobs(ctx, snap, max_inline_chars)
@@ -1316,11 +1217,7 @@ class GraphExecutor:
         return snap
 
     async def load_checkpoint(self, checkpoint_node_id: str) -> ExecutionContext:
-        """Restore an execution context from a checkpoint node.
-
-        Blob references written by ``checkpoint_context(max_inline_chars=...)``
-        are rehydrated from their sibling nodes before the context is rebuilt.
-        """
+        """Restore an execution context from a checkpoint node."""
         node = await self.store.get_node(checkpoint_node_id)
         if not isinstance(node, ContextNode):
             raise ValueError(f"Checkpoint node not found: {checkpoint_node_id}")
@@ -1365,12 +1262,11 @@ class GraphExecutor:
         """Resolve a dotted JSON path against a payload dict."""
         current: Any = payload
         for part in [p for p in path.split(".") if p]:
-            if isinstance(current, dict):
-                if part not in current:
+            match current:
+                case {**_} if part in current:
+                    current = current[part]
+                case _:
                     return None
-                current = current[part]
-                continue
-            return None
         return current
 
     def _payload_for_source(
@@ -1382,36 +1278,40 @@ class GraphExecutor:
         input_payload: Any = None,
         output_payload: Any = None,
     ) -> Any:
-        if source == "result":
-            return result
-        if source == "input":
-            return input_payload
-        if source == "output":
-            return output_payload
-        return state.data
+        match source:
+            case "result":
+                return result
+            case "input":
+                return input_payload
+            case "output":
+                return output_payload
+            case _:
+                return state.data
 
     def _compare_values(self, operator: str, left: Any, right: Any) -> bool:
-        if operator == "exists":
-            return left is not None
-        if operator == "truthy":
-            return bool(left)
-        if operator == "contains":
-            return left is not None and right in left
-        if operator == "not_equals":
-            return left != right
-        if operator == "in":
-            return left in right if right is not None else False
-        if operator == "regex":
-            return isinstance(left, str) and isinstance(right, str) and re.search(right, left) is not None
-        if operator == "gt":
-            return left > right
-        if operator == "gte":
-            return left >= right
-        if operator == "lt":
-            return left < right
-        if operator == "lte":
-            return left <= right
-        return left == right
+        match operator:
+            case "exists":
+                return left is not None
+            case "truthy":
+                return bool(left)
+            case "contains":
+                return left is not None and right in left
+            case "not_equals":
+                return left != right
+            case "in":
+                return left in right if right is not None else False
+            case "regex":
+                return isinstance(left, str) and isinstance(right, str) and re.search(right, left) is not None
+            case "gt":
+                return left > right
+            case "gte":
+                return left >= right
+            case "lt":
+                return left < right
+            case "lte":
+                return left <= right
+            case _:
+                return left == right
 
     def _evaluate_constraint_rule(
         self,
@@ -1449,12 +1349,10 @@ class GraphExecutor:
         result: dict[str, Any],
         state: WorkflowState,
     ) -> bool:
+        source_data = state.data if rule.source == "state" else result
         return self._compare_values(
             rule.operator,
-            self._resolve_json_path(
-                state.data if rule.source == "state" else result,
-                rule.path,
-            ) if rule.path else (state.data if rule.source == "state" else result),
+            self._resolve_json_path(source_data, rule.path) if rule.path else source_data,
             rule.value,
         )
 
@@ -1564,7 +1462,7 @@ class GraphExecutor:
         state: WorkflowState,
         result: dict[str, Any],
     ) -> DecisionRule | None:
-        for rule in sorted(table.rules, key=lambda item: item.priority, reverse=True):
+        for rule in sorted(table.rules, key=item -> item.priority, reverse=True):
             if all(
                 self._evaluate_constraint_rule(condition, state=state, result=result)
                 for condition in rule.conditions
@@ -1613,33 +1511,30 @@ class GraphExecutor:
         if not schema:
             return
         schema_type = schema.get("type")
-        if schema_type == "object":
-            if not isinstance(payload, dict):
-                raise ValueError(f"{label} must be an object")
-            required = schema.get("required", [])
-            for key in required:
-                if key not in payload:
-                    raise ValueError(f"{label} missing required field {key!r}")
-            properties = schema.get("properties", {})
-            for key, subschema in properties.items():
-                if key in payload:
-                    self._validate_against_schema(payload[key], subschema, label=f"{label}.{key}")
-            return
-        if schema_type == "array":
-            if not isinstance(payload, list):
-                raise ValueError(f"{label} must be an array")
-            item_schema = schema.get("items", {})
-            for idx, item in enumerate(payload):
-                self._validate_against_schema(item, item_schema, label=f"{label}[{idx}]")
-            return
-        if schema_type == "string" and not isinstance(payload, str):
-            raise ValueError(f"{label} must be a string")
-        if schema_type == "integer" and not isinstance(payload, int):
-            raise ValueError(f"{label} must be an integer")
-        if schema_type == "number" and not isinstance(payload, (int, float)):
-            raise ValueError(f"{label} must be a number")
-        if schema_type == "boolean" and not isinstance(payload, bool):
-            raise ValueError(f"{label} must be a boolean")
+        match schema_type:
+            case "object":
+                if not isinstance(payload, dict):
+                    raise ValueError(f"{label} must be an object")
+                required = schema.get("required", [])
+                for key in required:
+                    if key not in payload:
+                        raise ValueError(f"{label} missing required field {key!r}")
+                for key, subschema in schema.get("properties", {}).items():
+                    if key in payload:
+                        self._validate_against_schema(payload[key], subschema, label=f"{label}.{key}")
+            case "array":
+                if not isinstance(payload, list):
+                    raise ValueError(f"{label} must be an array")
+                for idx, item in enumerate(payload):
+                    self._validate_against_schema(item, schema.get("items", {}), label=f"{label}[{idx}]")
+            case "string" if not isinstance(payload, str):
+                raise ValueError(f"{label} must be a string")
+            case "integer" if not isinstance(payload, int):
+                raise ValueError(f"{label} must be an integer")
+            case "number" if not isinstance(payload, (int, float)):
+                raise ValueError(f"{label} must be a number")
+            case "boolean" if not isinstance(payload, bool):
+                raise ValueError(f"{label} must be a boolean")
 
     async def _validate_node_schemas(
         self,
@@ -1651,23 +1546,24 @@ class GraphExecutor:
         parent_event_id: str | None = None,
     ) -> None:
         try:
-            if isinstance(node, ToolNode):
-                if input_payload is not None:
-                    self._validate_against_schema(input_payload, node.input_schema, label="tool_input")
-                if output_payload is not None:
-                    self._validate_against_schema(output_payload, node.output_schema, label="tool_output")
-            if isinstance(node, AgentNode):
-                state_schema = node.state_schema or ctx.state.schema
-                if state_schema:
-                    self._validate_against_schema(ctx.state.data, state_schema, label="state")
-                await self._validate_constraint_rules(
-                    node,
-                    ctx=ctx,
-                    result=output_payload,
-                    input_payload=input_payload,
-                    output_payload=output_payload,
-                    parent_event_id=parent_event_id,
-                )
+            match node:
+                case ToolNode():
+                    if input_payload is not None:
+                        self._validate_against_schema(input_payload, node.input_schema, label="tool_input")
+                    if output_payload is not None:
+                        self._validate_against_schema(output_payload, node.output_schema, label="tool_output")
+                case AgentNode():
+                    state_schema = node.state_schema or ctx.state.schema
+                    if state_schema:
+                        self._validate_against_schema(ctx.state.data, state_schema, label="state")
+                    await self._validate_constraint_rules(
+                        node,
+                        ctx=ctx,
+                        result=output_payload,
+                        input_payload=input_payload,
+                        output_payload=output_payload,
+                        parent_event_id=parent_event_id,
+                    )
             validates = await self.store.get_edges(node.node_id, edge_type=EdgeType.VALIDATES, direction="in")
             for edge in validates:
                 schema_node = await self.store.get_node(edge.src_id)
@@ -1707,11 +1603,10 @@ class GraphExecutor:
             return None
         ctx.hop_count += 1
 
-        # Emit hop first so it becomes the parent container for all child events
         hop_event = self._emit(ctx, "hop", node.node_id, node.name or "", payload={
             "hop":       ctx.hop_count,
             "node_type": str(node.node_type),
-            "summary":   "",  # filled in below after execution
+            "summary":   "",
         })
 
         result = await self._execute_node(node, ctx, parent_event_id=hop_event.event_id)
@@ -1719,25 +1614,24 @@ class GraphExecutor:
         ctx.state.data["_last_node_id"] = node.node_id
         ctx.state.data["_last_output"] = result
 
-        # Back-fill summary now that we have the result
         hop_event.payload["summary"] = _summarise(result)
 
         if ctx.is_paused():
             return result
 
-        # Follow routing for AgentNodes
-        if isinstance(node, AgentNode) and node.routing_table:
-            next_id = await self._route(node, result, ctx, parent_event_id=hop_event.event_id)
-            if next_id and next_id != "__END__":
-                next_node = await self.store.get_node(next_id)
-                if next_node:
-                    return await self._run_sequential(next_node, ctx)
-        if isinstance(node, ApprovalNode):
-            next_id = result.get("next_node_id") if isinstance(result, dict) else None
-            if next_id and next_id != "__END__":
-                next_node = await self.store.get_node(next_id)
-                if next_node:
-                    return await self._run_sequential(next_node, ctx)
+        match node:
+            case AgentNode(routing_table=rt) if rt:
+                next_id = await self._route(node, result, ctx, parent_event_id=hop_event.event_id)
+                if next_id and next_id != "__END__":
+                    next_node = await self.store.get_node(next_id)
+                    if next_node:
+                        return await self._run_sequential(next_node, ctx)
+            case ApprovalNode():
+                next_id = result.get("next_node_id") if isinstance(result, dict) else None
+                if next_id and next_id != "__END__":
+                    next_node = await self.store.get_node(next_id)
+                    if next_node:
+                        return await self._run_sequential(next_node, ctx)
 
         return result
 
@@ -1792,15 +1686,7 @@ class GraphExecutor:
     # ------------------------------------------------------------------
 
     async def _run_topological(self, entry_node_id: str, ctx: ExecutionContext) -> None:
-        """Execute a DAG in topological order using stdlib graphlib.
-
-        Nodes with no unresolved dependencies execute in parallel per wave.
-        Results flow downstream via ctx.outputs.
-        """
-        # Build local dependency dict from the graph reachable from entry.
-        # TransformNode.input_keys that reference node_ids in the graph are
-        # treated as explicit fan-in dependencies so the sorter waits for all
-        # listed branches before firing the transform.
+        """Execute a DAG in topological order using stdlib graphlib."""
         dep_map: dict[str, set[str]] = {}
         visited: set[str] = set()
         queue = [entry_node_id]
@@ -1817,12 +1703,11 @@ class GraphExecutor:
                 if e.dst_id not in visited:
                     queue.append(e.dst_id)
 
-        # Second pass: add TransformNode.input_keys as explicit dependencies.
         for nid in list(dep_map):
             node = await self.store.get_node(nid)
             if isinstance(node, TransformNode) and node.input_keys:
                 for key in node.input_keys:
-                    if key in dep_map:  # key is a node_id in this subgraph
+                    if key in dep_map:
                         dep_map[nid].add(key)
 
         sorter = graphlib.TopologicalSorter(dep_map)
@@ -1843,7 +1728,6 @@ class GraphExecutor:
                 ready = ready[:remaining]
             nodes = list(await asyncio.gather(*[self.store.get_node(nid) for nid in ready]))
 
-            # Emit hop events before execution so they parent the child events
             hop_events = []
             valid_nodes = [(nid, n) for nid, n in zip(ready, nodes) if n is not None]
             for nid, n in valid_nodes:
@@ -1881,37 +1765,39 @@ class GraphExecutor:
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
     ) -> Any:
-        if isinstance(node, AgentNode):
-            return await self._execute_agent(node, ctx, parent_event_id=parent_event_id)
-        if isinstance(node, ToolNode):
-            t0 = time.monotonic()
-            result = await self._execute_tool(node, ctx)
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            self._emit(
-                ctx, "tool_result", node.node_id, node.name or "",
-                payload={
-                    "tool_name": node.name,
-                    "callable_ref": node.callable_ref,
-                    "output_summary": _summarise(result),
-                    "success": True,
-                    "duration_ms": duration_ms,
-                },
-                parent_event_id=parent_event_id,
-            )
-            return result
-        if isinstance(node, ApprovalNode):
-            return await self._execute_approval(node, ctx, parent_event_id=parent_event_id)
-        if isinstance(node, ContextNode):
-            return node.content
-        if isinstance(node, GraphNode):
-            return await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
-        if isinstance(node, TransformNode):
-            return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
-        if isinstance(node, ReasonerNode):
-            return await self._execute_reasoner(node, ctx, parent_event_id=parent_event_id)
-        if isinstance(node, PromptNode):
-            return node.render()
-        return None
+        match node:
+            case AgentNode():
+                return await self._execute_agent(node, ctx, parent_event_id=parent_event_id)
+            case ToolNode():
+                t0 = time.monotonic()
+                result = await self._execute_tool(node, ctx)
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                self._emit(
+                    ctx, "tool_result", node.node_id, node.name or "",
+                    payload={
+                        "tool_name": node.name,
+                        "callable_ref": node.callable_ref,
+                        "output_summary": _summarise(result),
+                        "success": True,
+                        "duration_ms": duration_ms,
+                    },
+                    parent_event_id=parent_event_id,
+                )
+                return result
+            case ApprovalNode():
+                return await self._execute_approval(node, ctx, parent_event_id=parent_event_id)
+            case ContextNode():
+                return node.content
+            case GraphNode():
+                return await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
+            case TransformNode():
+                return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
+            case ReasonerNode():
+                return await self._execute_reasoner(node, ctx, parent_event_id=parent_event_id)
+            case PromptNode():
+                return node.render()
+            case _:
+                return None
 
     # ------------------------------------------------------------------
     # Sub-graph execution
@@ -1925,21 +1811,7 @@ class GraphExecutor:
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
     ) -> Any:
-        """Run a GraphNode: descend, route to exit, surface result.
-
-        Behavior:
-        - Honors ``exit_node_id``: the returned value is the exit node's output
-          (falls back to entry_node_id if exit is unset).
-        - Scopes inner outputs to a child context when ``scope_outputs`` is True
-          so reusing the same sub-graph in multiple parents doesn't collide.
-        - Honors ``strategy`` (sequential|parallel|topological).
-        - Resolves ``input_keys`` / ``input_map`` from parent ctx.outputs +
-          state.data and threads them into the sub-run query / state.
-        - Raises ValueError if entry_node_id can't be resolved.
-        - Detects cycles via ctx._active_subgraphs and caps recursion depth.
-        - Wraps the sub-run in the node's execution_policy (retry + timeout).
-        """
-        # Cycle / depth protection
+        """Run a GraphNode: descend, route to exit, surface result."""
         if node.node_id in ctx._active_subgraphs:
             chain = " → ".join(ctx._active_subgraphs + [node.node_id])
             raise ValueError(f"GraphNode cycle detected: {chain}")
@@ -1961,8 +1833,6 @@ class GraphExecutor:
             )
 
         exit_id = node.exit_node_id or node.entry_node_id
-
-        # Resolve parent-side inputs.
         sub_query = self._resolve_subgraph_query(node, ctx)
         sub_state_overlay = self._resolve_subgraph_state(node, ctx)
 
@@ -1979,12 +1849,11 @@ class GraphExecutor:
 
         async def _run_subgraph() -> Any:
             if node.scope_outputs:
-                # Child context: isolated outputs/trace, shared state data + session
                 child = ExecutionContext(
                     query=sub_query,
                     session_id=ctx.session_id,
                     max_hops=max(ctx.max_hops - ctx.hop_count, 1),
-                    state=ctx.state,  # share workflow state (and pause/inbox)
+                    state=ctx.state,
                     allowed_tools=ctx.allowed_tools,
                     extra_messages=list(ctx.extra_messages),
                     _active_subgraphs=ctx._active_subgraphs + [node.node_id],
@@ -1992,12 +1861,10 @@ class GraphExecutor:
                 if sub_state_overlay:
                     ctx.state.data.update(sub_state_overlay)
                 await self._dispatch_strategy(node.strategy, sub_entry, child)
-                # Merge inner trace into parent trace (preserving structure).
                 ctx.trace.extend(child.trace)
                 ctx.hop_count += child.hop_count
                 return child.outputs.get(exit_id)
             else:
-                # Legacy: inner outputs leak into the parent.
                 ctx._active_subgraphs.append(node.node_id)
                 try:
                     if sub_state_overlay:
@@ -2049,34 +1916,22 @@ class GraphExecutor:
         entry:    AnyNode,
         ctx:      ExecutionContext,
     ) -> None:
-        if strategy == "sequential":
-            await self._run_sequential(entry, ctx)
-        elif strategy == "parallel":
-            await self._run_parallel(entry, ctx)
-        elif strategy == "topological":
-            await self._run_topological(entry.node_id, ctx)
-        else:
-            raise ValueError(f"Unknown sub-graph strategy: {strategy!r}")
+        match strategy:
+            case "sequential":
+                await self._run_sequential(entry, ctx)
+            case "parallel":
+                await self._run_parallel(entry, ctx)
+            case "topological":
+                await self._run_topological(entry.node_id, ctx)
+            case _:
+                raise ValueError(f"Unknown sub-graph strategy: {strategy!r}")
 
     async def resolve_subgraph_inputs(
         self,
         node: GraphNode | str,
         ctx:  ExecutionContext | None = None,
     ) -> dict[str, Any]:
-        """Dry-run a GraphNode's input wiring without executing anything.
-
-        Returns the resolved values the executor *would* use if it ran this
-        sub-graph now: the initial query, the state overlay (from ``input_map``),
-        and the entry / exit node ids (with ``exit_node_id`` defaulted to entry).
-
-        This is the fast-smoke-test entry point: assert that ``input_keys`` and
-        ``input_map`` are wired correctly against a parent context without
-        burning tokens.
-
-        Raises:
-            ValueError: if the node isn't a GraphNode, or if entry_node_id is
-                unset / unresolvable.
-        """
+        """Dry-run a GraphNode's input wiring without executing anything."""
         if isinstance(node, str):
             resolved = await self.store.get_node(node)
             if resolved is None:
@@ -2111,21 +1966,15 @@ class GraphExecutor:
         node: GraphNode,
         ctx:  ExecutionContext,
     ) -> QueryContent:
-        """Build the sub-graph's initial query from input_keys.
-
-        Each key is looked up first in ctx.outputs (by node_id), then in
-        ctx.state.data. Text portions of each resolved value are concatenated
-        with double newlines. If no keys are provided, the parent's query is
-        passed through unchanged.
-        """
+        """Build the sub-graph's initial query from input_keys."""
         if not node.input_keys:
             return ctx.query
-        parts: list[str] = []
-        for key in node.input_keys:
-            if key in ctx.outputs:
-                parts.append(_text_of(ctx.outputs[key]))
-            elif key in ctx.state.data:
-                parts.append(_text_of(ctx.state.data[key]))
+        parts = [
+            _text_of(ctx.outputs[key]) if key in ctx.outputs
+            else _text_of(ctx.state.data[key]) if key in ctx.state.data
+            else None
+            for key in node.input_keys
+        ]
         return "\n\n".join(p for p in parts if p) or _query_text(ctx.query)
 
     def _resolve_subgraph_state(
@@ -2136,13 +1985,11 @@ class GraphExecutor:
         """Resolve input_map aliases against parent outputs / state."""
         if not node.input_map:
             return {}
-        overlay: dict[str, Any] = {}
-        for alias, source in node.input_map.items():
-            if source in ctx.outputs:
-                overlay[alias] = ctx.outputs[source]
-            elif source in ctx.state.data:
-                overlay[alias] = ctx.state.data[source]
-        return overlay
+        return {
+            alias: ctx.outputs[source] if source in ctx.outputs else ctx.state.data[source]
+            for alias, source in node.input_map.items()
+            if source in ctx.outputs or source in ctx.state.data
+        }
 
     # ------------------------------------------------------------------
     # Agent execution
@@ -2174,8 +2021,6 @@ class GraphExecutor:
             parent_event_id=parent_event_id,
         )
 
-        # Emit agent_start as child of the hop event; generate its own event_id
-        # so tool_call / context_inject / agent_end can reference it as parent.
         agent_event_id = str(uuid.uuid4())
         self._emit(
             ctx, "agent_start", node.node_id, node.name or "",
@@ -2199,7 +2044,6 @@ class GraphExecutor:
             parent_event_id=parent_event_id,
         )
 
-        # Emit context_inject if any context was assembled
         if composed.context:
             self._emit(
                 ctx, "context_inject", node.node_id, node.name or "",
@@ -2223,7 +2067,6 @@ class GraphExecutor:
                 parent_event_id=agent_event_id,
             )
 
-        # Build message history — inject prior outputs as assistant context
         messages: list[dict[str, Any]] = list(ctx.extra_messages)
         if ctx.state.data:
             messages.append({
@@ -2231,13 +2074,12 @@ class GraphExecutor:
                 "content": f"Workflow state:\n{json.dumps(ctx.state.data, sort_keys=True, default=str)}",
             })
 
-        # Merge query content with any image context nodes (visual RAG).
         image_ctx_blocks = composed.build_image_context_blocks()
         if image_ctx_blocks:
-            if isinstance(ctx.query, list):
-                user_content: QueryContent = list(ctx.query) + image_ctx_blocks
-            else:
-                user_content = [{"type": "text", "text": ctx.query}] + image_ctx_blocks
+            user_content: QueryContent = (
+                list(ctx.query) + image_ctx_blocks if isinstance(ctx.query, list)
+                else [{"type": "text", "text": ctx.query}] + image_ctx_blocks
+            )
         else:
             user_content = ctx.query
         messages.append({"role": "user", "content": user_content})
@@ -2245,13 +2087,12 @@ class GraphExecutor:
         last_response = None
         iterations = 0
 
-        # Agentic tool-call loop
         for _iteration in range(node.max_iterations):
             iterations += 1
             policy = node.execution_policy
             try:
                 last_response = await self._call_with_retry(
-                    lambda: self._chat_once(node, system, messages, tool_defs),
+                    -> self._chat_once(node, system, messages, tool_defs),
                     ctx,
                     node=node,
                     policy=policy,
@@ -2298,7 +2139,6 @@ class GraphExecutor:
                 messages = self._backend.extend_messages(messages, last_response, tool_results)
                 continue
 
-            # Unexpected stop reason — return what we have
             break
 
         text = last_response.text if last_response else ""
@@ -2401,7 +2241,7 @@ class GraphExecutor:
 
     async def _handle_tool_calls(
         self,
-        response:        Any,   # LLMResponse
+        response:        Any,
         agent_node:      AgentNode,
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
@@ -2419,7 +2259,6 @@ class GraphExecutor:
             tool_node = tool_map.get(tc.name)
             callable_ref = tool_node.callable_ref if tool_node else ""
 
-            # Emit tool_call event
             call_event = self._emit(
                 ctx, "tool_call",
                 tool_node.node_id if tool_node else agent_node.node_id,
@@ -2448,7 +2287,6 @@ class GraphExecutor:
 
             duration_ms = int((time.monotonic() - t0) * 1000)
 
-            # Emit tool_result event
             self._emit(
                 ctx, "tool_result",
                 tool_node.node_id if tool_node else agent_node.node_id,
@@ -2471,23 +2309,7 @@ class GraphExecutor:
     # ------------------------------------------------------------------
 
     def _callable_injection_kwargs(self, fn: Any, ctx: ExecutionContext) -> dict[str, Any]:
-        """Extra keyword arguments to pass to a tool/transform callable.
-
-        A registered callable opts in to runtime context by declaring an
-        explicit ``session_id`` and/or ``ctx`` parameter in its signature:
-
-            def load_form(payload, *, session_id): ...          # gets ctx.session_id
-            def upsert(payload, *, ctx): ...                     # gets the ExecutionContext
-            def kg_query(payload, *, store): ...                 # gets the GraphStore
-
-        This is how a tool backed by a stateful service (e.g. an MCP client that
-        holds per-session in-memory state) routes each call to the right session.
-        Callables that take only the payload — the overwhelming majority, and
-        every mock in the test suite — receive no extra kwargs and are wholly
-        unaffected. Injection is keyed on the *explicit* parameter name only;
-        ``**kwargs`` catch-alls are deliberately NOT injected into, to keep the
-        contract predictable and avoid colliding with forwarded payload keys.
-        """
+        """Extra keyword arguments to pass to a tool/transform callable."""
         try:
             params = inspect.signature(fn).parameters
         except (TypeError, ValueError):
@@ -2553,17 +2375,12 @@ class GraphExecutor:
                 "Call executor.register_tool(ref, fn) before running."
             )
 
-        # Collect fan-in inputs: each input_key is tried first as a node_id in
-        # ctx.outputs, then as a key in ctx.state.data.  When no input_keys are
-        # declared, use the last output if available, otherwise ctx.state.data
-        # (covers the case where the transform is the entry node).
         if node.input_keys:
-            input_data: dict[str, Any] = {}
-            for key in node.input_keys:
-                if key in ctx.outputs:
-                    input_data[key] = ctx.outputs[key]
-                elif key in ctx.state.data:
-                    input_data[key] = ctx.state.data[key]
+            input_data: dict[str, Any] = {
+                key: ctx.outputs[key] if key in ctx.outputs else ctx.state.data[key]
+                for key in node.input_keys
+                if key in ctx.outputs or key in ctx.state.data
+            }
         elif ctx.outputs:
             last = list(ctx.outputs.values())[-1]
             input_data = dict(last) if isinstance(last, dict) else {"input": last}
@@ -2575,7 +2392,6 @@ class GraphExecutor:
             return ctx.state.idempotency_cache[idempotency_key]
 
         t0 = time.monotonic()
-
         injected = self._callable_injection_kwargs(fn, ctx)
 
         async def invoke() -> Any:
@@ -2614,13 +2430,7 @@ class GraphExecutor:
         ctx: ExecutionContext,
         parent_event_id: str | None = None,
     ) -> dict[str, Any]:
-        """Run the symbolic Datalog reasoner over facts from state + the KG.
-
-        This is the neural→symbolic bridge: facts produced by an upstream agent
-        (and/or materialised in the knowledge graph) are fed into a sound rule
-        program, and the deductive closure is written back for a downstream
-        agent to consume. No LLM call is made here.
-        """
+        """Run the symbolic Datalog reasoner over facts from state + the KG."""
         from yggdrasil_lm.symbolic.datalog import (
             Program,
             Rule,
@@ -2629,13 +2439,11 @@ class GraphExecutor:
             rule_from_obj,
         )
 
-        # 1. Compile the program (string DSL + any pre-parsed rules).
         rules: list[Rule] = list(parse_program(node.program)) if node.program else []
         for raw in node.rules:
             rules.extend(rule_from_obj(raw))
         program = Program(rules)
 
-        # 2. Gather ground facts.
         facts = await self._gather_reasoner_facts(node, ctx)
 
         t0 = time.monotonic()
@@ -2644,7 +2452,7 @@ class GraphExecutor:
             return program.solve(facts, with_proof=node.with_proof)
 
         solution = await self._call_with_retry(
-            lambda: asyncio.to_thread(_solve),
+            -> asyncio.to_thread(_solve),
             ctx,
             node=node,
             policy=node.execution_policy,
@@ -2652,7 +2460,6 @@ class GraphExecutor:
         )
         duration_ms = int((time.monotonic() - t0) * 1000)
 
-        # 3. Project the requested predicates.
         emitted = solution.derived if node.emit_derived_only else solution.facts
         if node.query:
             wanted = set(node.query)
@@ -2708,7 +2515,6 @@ class GraphExecutor:
         src = node.fact_source
         facts: list[Any] = []
 
-        # (a) Explicit state keys.
         if src.state_keys:
             for key in src.state_keys:
                 val = ctx.state.data.get(key)
@@ -2717,7 +2523,6 @@ class GraphExecutor:
                 elif val is not None:
                     facts.append(val)
         else:
-            # Fallback: previous node output (if a fact list) then state["facts"].
             if ctx.outputs:
                 last = list(ctx.outputs.values())[-1]
                 if isinstance(last, list):
@@ -2727,7 +2532,6 @@ class GraphExecutor:
             if isinstance(ctx.state.data.get("facts"), list):
                 facts.extend(ctx.state.data["facts"])
 
-        # (b) Knowledge-graph edges as binary facts: edge_type(src, dst).
         if src.edge_types:
             name_cache: dict[str, str] = {}
 
@@ -2746,7 +2550,7 @@ class GraphExecutor:
                 try:
                     edge_type = EdgeType(etype)
                 except ValueError:
-                    edge_type = None  # custom edge type stored as string
+                    edge_type = None
                 edges = await self.store.list_edges(edge_type=edge_type) if edge_type else []
                 if edge_type is None:
                     edges = [e for e in await self.store.list_edges() if str(e.edge_type) == etype]
@@ -2754,7 +2558,6 @@ class GraphExecutor:
                 for e in edges:
                     facts.append((pred, await _label(e.src_id), await _label(e.dst_id)))
 
-        # (c) Node membership facts: node_type(name).
         if src.include_node_facts:
             for n in await self.store.list_nodes():
                 label = n.name if (src.use_node_names and n.name) else n.node_id
@@ -2831,17 +2634,7 @@ class GraphExecutor:
         output: Any,
         ctx: ExecutionContext,
     ) -> ContextNode:
-        """Write execution output back into the graph as a ContextNode.
-
-        The resulting context is reachable by future agents via vector_search
-        or explicit HAS_CONTEXT edges — no external memory store needed.
-
-        Runtime nodes are tagged so they can be identified and cleaned up
-        without graph traversal:
-        - group_id = ctx.session_id       → fast session-scoped queries
-        - attributes["origin"] = "runtime" → discriminates from predefined nodes
-          even when group_id is filtered by something other than session
-        """
+        """Write execution output back into the graph as a ContextNode."""
         from yggdrasil_lm.core.nodes import ContextNode
         from yggdrasil_lm.core.edges import Edge
 
@@ -2909,7 +2702,7 @@ class GraphExecutor:
                     parent_event_id=parent_event_id,
                 )
                 return target
-        for rule in sorted(node.route_rules, key=lambda r: r.priority, reverse=True):
+        for rule in sorted(node.route_rules, key=r -> r.priority, reverse=True):
             if self._evaluate_route_rule(rule, result=result, state=ctx.state):
                 if rule.pause_on_match:
                     await self._pause_execution(
@@ -2948,11 +2741,7 @@ class GraphExecutor:
         return next_id
 
     async def _infer_intent(self, text: str, node: AgentNode) -> str:
-        """Classify routing intent from agent output text.
-
-        Uses an LLM for accurate intent detection when a backend and routing
-        table are available; falls back to keyword matching otherwise.
-        """
+        """Classify routing intent from agent output text."""
         if not node.routing_table:
             return "default"
         intents = [intent for intent in node.routing_table if intent != "default"]
@@ -2999,22 +2788,7 @@ class GraphExecutor:
         query: str,
         candidates: list[AgentNode] | None = None,
     ) -> RoutingDecision:
-        """LLM-based router: pick the best AgentNode for *query*.
-
-        Makes a single lightweight LLM call that returns structured JSON with
-        an explicit reason and confidence score, making routing fully observable.
-
-        Args:
-            query:      The user task or query string.
-            candidates: AgentNodes to consider; defaults to all valid agents
-                        in the store.
-
-        Returns:
-            RoutingDecision with agent_id, reason, confidence (and an optional
-            low_confidence_warning when confidence < 0.7).
-
-        Falls back to the first candidate at confidence 0.5 if JSON parsing fails.
-        """
+        """LLM-based router: pick the best AgentNode for *query*."""
         if candidates is None:
             all_nodes = await self.store.list_nodes(node_type=NodeType.AGENT)
             candidates = [n for n in all_nodes if isinstance(n, AgentNode) and n.is_valid]
@@ -3023,11 +2797,7 @@ class GraphExecutor:
             raise ValueError("No valid AgentNode candidates found in the store.")
 
         if len(candidates) == 1:
-            return RoutingDecision(
-                agent_id=candidates[0].node_id,
-                reason="Only one agent available.",
-                confidence=1.0,
-            )
+            return RoutingDecision(candidates[0].node_id, "Only one agent available.", 1.0)
 
         agent_list = "\n".join(f"- {n.node_id}: {n.description}" for n in candidates)
         prompt = _ROUTER_TEMPLATE.format(agent_list=agent_list, query=query)
@@ -3041,24 +2811,19 @@ class GraphExecutor:
             )
             data = json.loads(response.text.strip())
             return RoutingDecision(
-                agent_id=str(data["agent"]),
-                reason=str(data.get("reason", "")),
-                confidence=float(data.get("confidence", 0.5)),
+                str(data["agent"]),
+                str(data.get("reason", "")),
+                float(data.get("confidence", 0.5)),
             )
         except Exception:
             return RoutingDecision(
-                agent_id=candidates[0].node_id,
-                reason="Fallback: router response could not be parsed.",
-                confidence=0.5,
+                candidates[0].node_id,
+                "Fallback: router response could not be parsed.",
+                0.5,
             )
 
     async def plan(self, query: str) -> RoutingDecision:
-        """Deprecated alias for route().
-
-        .. deprecated::
-            Use ``await executor.route(query)`` instead.  ``plan()`` will be
-            removed in a future release.
-        """
+        """Deprecated alias for route()."""
         import warnings
         warnings.warn(
             "GraphExecutor.plan() is deprecated and will be removed in a future release. "
@@ -3074,18 +2839,7 @@ class GraphExecutor:
         query: QueryContent,
         routing: RoutingDecision | None = None,
     ) -> AgentResult:
-        """Phase 2 of two-phase dispatch: run *agent_id* and return a structured envelope.
-
-        Args:
-            agent_id: node_id of the AgentNode to execute.
-            query:    The user task — a plain string or a multimodal content list.
-            routing:  RoutingDecision from plan(); if omitted, a direct-execution
-                      stub is used (confidence 1.0, no warning).
-
-        Returns:
-            AgentResult with routed_to, reason, confidence, context_injected,
-            result, and an optional low_confidence_warning.
-        """
+        """Phase 2 of two-phase dispatch: run *agent_id* and return a structured envelope."""
         node = await self.store.get_node(agent_id)
         if node is None or not isinstance(node, AgentNode):
             raise ValueError(f"Agent node not found or not an AgentNode: {agent_id!r}")
@@ -3097,11 +2851,7 @@ class GraphExecutor:
         raw = await self._execute_agent(node, ctx)
         text = raw.get("text", "") if isinstance(raw, dict) else str(raw)
 
-        decision = routing or RoutingDecision(
-            agent_id=agent_id,
-            reason="Direct execution (no routing phase).",
-            confidence=1.0,
-        )
+        decision = routing or RoutingDecision(agent_id, "Direct execution (no routing phase).", 1.0)
 
         return AgentResult(
             routed_to=agent_id,
@@ -3118,48 +2868,22 @@ class GraphExecutor:
 # ---------------------------------------------------------------------------
 
 def print_trace(ctx: ExecutionContext | list[TraceEvent], *, width: int = 72) -> None:
-    """Print the execution trace as a human-readable tree.
-
-    Groups events by parent_event_id to show the agent → tool → result
-    hierarchy. Emits timing, intent, confidence warnings, and context
-    injection summaries inline.
-
-    Args:
-        ctx:   An ExecutionContext (uses ctx.trace and ctx.session_id / ctx.query)
-               or a raw list[TraceEvent].
-        width: Console width for the separator line (default 72).
-
-    Example output::
-
-        Session a1b2c3d4  "research and summarise quantum computing"
-        ════════════════════════════════════════════════════════════════════════
-        hop 1  AGENT  researcher
-          context_inject  web_results, doc_chunk  (2 nodes)
-          tool_call       web_search  {"query": "quantum computing 2024"}
-            tool_result   web_search  ok  "Results: quantum…"          [12ms]
-          routing         synthesis_needed → synthesizer_node_id
-          agent_end       "Based on the research, quantum…"  intent=synthesis_needed  [45ms]
-        hop 2  AGENT  synthesizer
-          agent_end       "Final summary: …"  intent=default  [32ms]
-        ════════════════════════════════════════════════════════════════════════
-        Total: 2 hops · 2 agent_end events · 77ms
-    """
-    if isinstance(ctx, ExecutionContext):
-        events = ctx.trace
-        session_id = ctx.session_id[:8]
-        query = _query_text(ctx.query)
-    else:
-        events = ctx
-        session_id = events[0].session_id[:8] if events else "?"
-        query = ""
+    """Print the execution trace as a human-readable tree."""
+    match ctx:
+        case ExecutionContext():
+            events = ctx.trace
+            session_id = ctx.session_id[:8]
+            query = _query_text(ctx.query)
+        case _:
+            events = ctx
+            session_id = events[0].session_id[:8] if events else "?"
+            query = ""
 
     sep = "═" * width
     print(f"\nSession {session_id}  {query!r}")
     print(sep)
 
-    # Index events by event_id for O(1) parent lookup
     by_id: dict[str, TraceEvent] = {e.event_id: e for e in events}
-    # Group children by parent_event_id
     children: dict[str | None, list[TraceEvent]] = {}
     for e in events:
         children.setdefault(e.parent_event_id, []).append(e)
@@ -3173,81 +2897,77 @@ def print_trace(ctx: ExecutionContext | list[TraceEvent], *, width: int = 72) ->
         p   = event.payload
         ms  = _fmt_ms(event.duration_ms)
 
-        if t == "hop":
-            node_type = p.get("node_type", "").split(".")[-1].upper()
-            hop_num   = p.get("hop", "")
-            hop_label = f"hop {hop_num}  " if hop_num else ""
-            print(f"{pad}{hop_label}{node_type}  {event.node_name}")
-            for child in children.get(event.event_id, []):
-                _render(child, indent + 1)
+        match t:
+            case "hop":
+                node_type = p.get("node_type", "").split(".")[-1].upper()
+                hop_num   = p.get("hop", "")
+                hop_label = f"hop {hop_num}  " if hop_num else ""
+                print(f"{pad}{hop_label}{node_type}  {event.node_name}")
+                for child in children.get(event.event_id, []):
+                    _render(child, indent + 1)
 
-        elif t == "agent_start":
-            tools = ", ".join(p.get("tools", [])) or "none"
-            ctx_l = p.get("context", [])
-            ctx_s = f"  context: {', '.join(ctx_l)}" if ctx_l else ""
-            print(f"{pad}tools: {tools}{ctx_s}")
-            if p.get("context_scores"):
-                ranked = []
-                for item in p["context_scores"]:
-                    ranked.append(
+            case "agent_start":
+                tools = ", ".join(p.get("tools", [])) or "none"
+                ctx_l = p.get("context", [])
+                ctx_s = f"  context: {', '.join(ctx_l)}" if ctx_l else ""
+                print(f"{pad}tools: {tools}{ctx_s}")
+                if p.get("context_scores"):
+                    ranked = [
                         f"{item.get('name')}[{item.get('score')}, {item.get('source')}, hops={item.get('hops')}]"
+                        for item in p["context_scores"]
+                    ]
+                    print(f"{pad}ranked_context: {' | '.join(ranked)}")
+                for child in children.get(event.event_id, []):
+                    _render(child, indent)
+
+            case "context_inject":
+                names = ", ".join(p.get("context_names", [])) or "—"
+                count = p.get("count", 0)
+                print(f"{pad}context_inject  {names}  ({count} nodes)")
+                for item in p.get("selected_contexts", []):
+                    reasons = ", ".join(item.get("reasons", []))
+                    print(
+                        f"{pad}  selected  {item.get('name')}  score={item.get('score')}  "
+                        f"source={item.get('source')}  hops={item.get('hops')}  "
+                        f"tokens={item.get('token_count')}"
                     )
-                print(f"{pad}ranked_context: {' | '.join(ranked)}")
-            for child in children.get(event.event_id, []):
-                _render(child, indent)
+                    if reasons:
+                        print(f"{pad}    reasons  {reasons}")
 
-        elif t == "context_inject":
-            names = ", ".join(p.get("context_names", [])) or "—"
-            count = p.get("count", 0)
-            print(f"{pad}context_inject  {names}  ({count} nodes)")
-            selected = p.get("selected_contexts", [])
-            for item in selected:
-                reasons = ", ".join(item.get("reasons", []))
-                print(
-                    f"{pad}  selected  {item.get('name')}  score={item.get('score')}  "
-                    f"source={item.get('source')}  hops={item.get('hops')}  "
-                    f"tokens={item.get('token_count')}"
-                )
-                if reasons:
-                    print(f"{pad}    reasons  {reasons}")
+            case "agent_end":
+                summary = p.get("text_summary", "")
+                intent  = p.get("intent", "default")
+                iters   = p.get("iterations", 1)
+                iter_s  = f"  iters={iters}" if iters > 1 else ""
+                print(f"{pad}agent_end  {summary!r}  intent={intent}{iter_s}  {ms}")
 
-        elif t == "agent_end":
-            summary = p.get("text_summary", "")
-            intent  = p.get("intent", "default")
-            iters   = p.get("iterations", 1)
-            iter_s  = f"  iters={iters}" if iters > 1 else ""
-            print(f"{pad}agent_end  {summary!r}  intent={intent}{iter_s}  {ms}")
+            case "tool_call":
+                inp = json.dumps(p.get("input", {}), ensure_ascii=False)
+                inp = inp[:60] + "…" if len(inp) > 60 else inp
+                print(f"{pad}tool_call  {event.node_name}  {inp}")
+                for child in children.get(event.event_id, []):
+                    _render(child, indent + 1)
 
-        elif t == "tool_call":
-            inp = json.dumps(p.get("input", {}), ensure_ascii=False)
-            inp = inp[:60] + "…" if len(inp) > 60 else inp
-            print(f"{pad}tool_call  {event.node_name}  {inp}")
-            for child in children.get(event.event_id, []):
-                _render(child, indent + 1)
+            case "tool_result":
+                status  = "ok" if p.get("success") else "err"
+                summary = p.get("output_summary", "")
+                print(f"{pad}tool_result  {event.node_name}  {status}  {summary!r}  {ms}")
 
-        elif t == "tool_result":
-            status  = "ok" if p.get("success") else "err"
-            summary = p.get("output_summary", "")
-            print(f"{pad}tool_result  {event.node_name}  {status}  {summary!r}  {ms}")
+            case "routing":
+                intent  = p.get("intent", "default")
+                next_id = p.get("next_node_id") or "__END__"
+                conf    = p.get("confidence")
+                conf_s  = f"  conf={conf:.0%}" if conf is not None else ""
+                print(f"{pad}routing  {intent} → {next_id}{conf_s}")
 
-        elif t == "routing":
-            intent  = p.get("intent", "default")
-            next_id = p.get("next_node_id") or "__END__"
-            conf    = p.get("confidence")
-            conf_s  = f"  conf={conf:.0%}" if conf is not None else ""
-            print(f"{pad}routing  {intent} → {next_id}{conf_s}")
+            case "subgraph_enter":
+                print(f"{pad}subgraph_enter  {event.node_name}  entry={p.get('entry_node_id','')}")
+                for child in children.get(event.event_id, []):
+                    _render(child, indent + 1)
 
-        elif t == "subgraph_enter":
-            print(f"{pad}subgraph_enter  {event.node_name}  entry={p.get('entry_node_id','')}")
-            for child in children.get(event.event_id, []):
-                _render(child, indent + 1)
+            case "subgraph_exit":
+                print(f"{pad}subgraph_exit   {event.node_name}  {ms}")
 
-        elif t == "subgraph_exit":
-            print(f"{pad}subgraph_exit   {event.node_name}  {ms}")
-
-    # Render top-level events (no parent) in order.
-    # With the current design, only "hop" and "subgraph_enter/exit" are top-level;
-    # agent_start / agent_end are children of hop events.
     total_ms = 0
     hops     = 0
     ends     = 0
@@ -3276,39 +2996,10 @@ async def get_runtime_nodes(
     session_id: str | None = None,
     only_valid: bool = True,
 ) -> list[ContextNode]:
-    """Return runtime-materialised ContextNodes without graph traversal.
-
-    Uses the ``attributes["origin"] == "runtime"`` tag set by
-    ``_materialise_output`` as the discriminator, so no edge traversal is
-    needed.  When *session_id* is provided the query is further narrowed to
-    ``group_id == session_id``, making it O(nodes-in-session) instead of
-    O(all-nodes).
-
-    Args:
-        store:      The graph store to query.
-        session_id: Limit results to a specific session.  Pass
-                    ``ctx.session_id`` from a completed run.  When ``None``
-                    all runtime nodes across all sessions are returned.
-        only_valid: Skip expired nodes (default True).
-
-    Returns:
-        List of ContextNode objects tagged as runtime-materialised.
-
-    Example::
-
-        ctx = await executor.run(agent.node_id, "query")
-
-        # All runtime nodes from this session
-        nodes = await get_runtime_nodes(store, session_id=ctx.session_id)
-        for n in nodes:
-            print(n.name, n.attributes["source_node_id"])
-
-        # All runtime nodes across every session (slower)
-        all_runtime = await get_runtime_nodes(store)
-    """
+    """Return runtime-materialised ContextNodes without graph traversal."""
     candidates = await store.list_nodes(
         node_type=NodeType.CONTEXT,
-        group_id=session_id,   # None → no group_id filter; str → fast path
+        group_id=session_id,
         only_valid=only_valid,
     )
     return [
@@ -3322,41 +3013,10 @@ async def cleanup_session(
     session_id: str,
     hard:       bool = False,
 ) -> int:
-    """Expire (or hard-delete) all runtime nodes from *session_id*.
-
-    Because runtime nodes are written with ``group_id = session_id``,
-    ``store.list_nodes(group_id=session_id)`` returns exactly the nodes
-    created during that run — no edge traversal required.
-
-    The PRODUCES edges that connect source nodes to the materialised
-    ContextNodes are soft-expired too (or hard-deleted when ``hard=True``),
-    keeping the graph consistent.
-
-    Args:
-        store:      The graph store to clean up.
-        session_id: The session to clean up; pass ``ctx.session_id``.
-        hard:       When True, hard-delete nodes and edges instead of
-                    soft-expiring them.  Soft-expire (the default) preserves
-                    history and allows point-in-time queries.
-
-    Returns:
-        Number of nodes removed/expired.
-
-    Example::
-
-        ctx = await executor.run(agent.node_id, "query")
-
-        # Soft-expire (preserves history)
-        n = await cleanup_session(store, ctx.session_id)
-        print(f"Expired {n} runtime nodes")
-
-        # Hard-delete (frees memory / storage)
-        n = await cleanup_session(store, ctx.session_id, hard=True)
-    """
+    """Expire (or hard-delete) all runtime nodes from *session_id*."""
     nodes = await store.list_nodes(group_id=session_id, only_valid=False)
     count = 0
     for node in nodes:
-        # Expire/delete inbound PRODUCES edges to keep the graph consistent
         in_edges = await store.get_edges(
             node.node_id, edge_type=EdgeType.PRODUCES, direction="in", only_valid=False
         )
@@ -3385,19 +3045,17 @@ def _summarise(value: Any, max_len: int = 200) -> str:
 
 
 def _text_of(value: Any) -> str:
-    """Best-effort extraction of a string payload from a node output.
-
-    Agent outputs are typically ``{"text": "...", "intent": "...", ...}``.
-    Tool / transform outputs may be raw strings, dicts, or arbitrary values.
-    """
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for key in ("text", "output", "result", "content"):
-            v = value.get(key)
-            if isinstance(v, str):
-                return v
-        return str(value)
-    return str(value)
+    """Best-effort extraction of a string payload from a node output."""
+    match value:
+        case None:
+            return ""
+        case str():
+            return value
+        case {**_}:
+            for key in ("text", "output", "result", "content"):
+                v = value.get(key)
+                if isinstance(v, str):
+                    return v
+            return str(value)
+        case _:
+            return str(value)

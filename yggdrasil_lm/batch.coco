@@ -23,7 +23,7 @@ Usage::
         items         = documents,
         query_fn      = lambda doc: f"Summarise: {doc['title']}",
         context_fn    = lambda doc: doc["body"],
-        reduce_fn     = lambda outputs: "\\n\\n".join(o["text"] for o in outputs),
+        reduce_fn     = lambda outputs: "\n\n".join(o["text"] for o in outputs),
         on_progress   = lambda r: print(f"{r.progress:.0%} — {r.completed}/{r.total}"),
     )
 
@@ -38,8 +38,6 @@ Usage::
     # Resume after a crash (skips COMPLETED items)
     run = await batch.resume(run.run_id, items, query_fn, context_fn=context_fn)
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
@@ -147,7 +145,7 @@ class BatchRun:
         """Outputs of all COMPLETED items in original item order."""
         return [
             r.output
-            for r in sorted(self.results.values(), key=lambda r: int(r.item_id))
+            for r in sorted(self.results.values(), key=r -> int(r.item_id))
             if r.status == BatchStatus.COMPLETED
         ]
 

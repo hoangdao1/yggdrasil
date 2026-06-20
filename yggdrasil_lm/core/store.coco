@@ -5,8 +5,6 @@ NetworkXGraphStore is the zero-infrastructure default for development and testin
 Swap it for Neo4jGraphStore (yggdrasil/backends/neo4j.py) in production.
 """
 
-from __future__ import annotations
-
 import math
 from abc import ABC, abstractmethod
 from typing import Any
@@ -257,13 +255,14 @@ class NetworkXGraphStore(GraphStore):
         direction: str = "out",
         only_valid: bool = True,
     ) -> list[Edge]:
-        if direction == "out":
-            raw = self._g.out_edges(node_id, keys=True)
-        elif direction == "in":
-            raw = self._g.in_edges(node_id, keys=True)
-        else:
-            raw = list(self._g.out_edges(node_id, keys=True)) + \
-                  list(self._g.in_edges(node_id, keys=True))
+        match direction:
+            case "out":
+                raw = self._g.out_edges(node_id, keys=True)
+            case "in":
+                raw = self._g.in_edges(node_id, keys=True)
+            case _:
+                raw = list(self._g.out_edges(node_id, keys=True)) + \
+                      list(self._g.in_edges(node_id, keys=True))
 
         results: list[Edge] = []
         seen: set[str] = set()
@@ -364,7 +363,7 @@ class NetworkXGraphStore(GraphStore):
             score = _cosine(q, node.embedding)
             results.append((node, score))
 
-        results.sort(key=lambda x: x[1], reverse=True)
+        results.sort(key=x -> x[1], reverse=True)
         return results[:top_k]
 
     # ------------------------------------------------------------------

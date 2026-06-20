@@ -6,8 +6,6 @@ Usage:
     await embedder.embed_all(store, node_types=[...])  # batch embed
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import os
@@ -52,10 +50,11 @@ class Embedder:
             parts.append(node.name)
         if node.description:
             parts.append(node.description)
-        if isinstance(node, ContextNode) and node.content:
-            parts.append(node.content[:2000])
-        if isinstance(node, ToolNode) and node.input_schema:
-            parts.append(json.dumps(node.input_schema)[:500])
+        match node:
+            case ContextNode(content=content) if content:
+                parts.append(content[:2000])
+            case ToolNode(input_schema=schema) if schema:
+                parts.append(json.dumps(schema)[:500])
         return ": ".join(parts) or node.node_id
 
     async def embed_text(self, text: str) -> list[float]:

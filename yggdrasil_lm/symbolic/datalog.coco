@@ -36,8 +36,6 @@ lists, or as dicts ``{"predicate": "parent", "args": [...]}`` — see
 :func:`normalise_fact`.
 """
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Iterator
@@ -232,7 +230,7 @@ def _parse_term(token: str) -> Term:
         return Const(float(token))
     if token in ("true", "false"):
         return Const(token == "true")
-    # Bare word → string constant.
+    # Bare word -> string constant.
     return Const(token)
 
 
@@ -301,11 +299,10 @@ def _find_top_level_op(text: str, op: str) -> int | None:
 
 def parse_program(text: str) -> list[Rule]:
     """Parse a Datalog program (string DSL) into a list of :class:`Rule`."""
-    text = _strip_comments(text)
     rules: list[Rule] = []
     # Statements terminate at top-level '.' — but '.' also appears in floats
     # (3.14) and inside quotes, so split carefully.
-    for stmt in _split_statements(text):
+    for stmt in text |> _strip_comments |> _split_statements:
         stmt = stmt.strip()
         if not stmt:
             continue
@@ -333,23 +330,22 @@ def rule_from_obj(obj: Any) -> list[Rule]:
     ``body`` may be omitted/empty for a fact. Returns a list (a string may parse
     to several rules if it contains multiple statements).
     """
-    if isinstance(obj, Rule):
-        return [obj]
-    if isinstance(obj, str):
-        return parse_program(obj)
-    if isinstance(obj, dict):
-        head = obj.get("head")
-        if not head:
-            raise ParseError(f"rule dict missing 'head': {obj!r}")
-        body = obj.get("body") or []
-        if isinstance(body, str):
-            body = [body]
-        if body:
-            stmt = f"{head} :- {', '.join(body)}"
-        else:
-            stmt = str(head)
-        return parse_program(stmt)
-    raise ParseError(f"cannot interpret rule: {obj!r}")
+    match obj:
+        case Rule():
+            return [obj]
+        case str():
+            return parse_program(obj)
+        case dict():
+            head = obj.get("head")
+            if not head:
+                raise ParseError(f"rule dict missing 'head': {obj!r}")
+            body = obj.get("body") or []
+            if isinstance(body, str):
+                body = [body]
+            stmt = f"{head} :- {', '.join(body)}" if body else str(head)
+            return parse_program(stmt)
+        case _:
+            raise ParseError(f"cannot interpret rule: {obj!r}")
 
 
 def _split_statements(text: str) -> list[str]:
@@ -406,22 +402,24 @@ def normalise_fact(item: Any) -> GroundFact:
       * a dict ``{"predicate": "parent", "args": [...]}`` (``terms`` also works)
       * a string in atom syntax ``parent("alice", "bob")`` (must be ground)
     """
-    if isinstance(item, str):
-        atom = _parse_atom(item)
-        if atom.vars():
-            raise UnsafeRuleError(f"input fact contains variables: {item!r}")
-        return (atom.predicate, *(t.value for t in atom.terms))  # type: ignore[union-attr]
-    if isinstance(item, dict):
-        pred = item.get("predicate") or item.get("pred")
-        if not pred:
-            raise DatalogError(f"fact dict missing 'predicate': {item!r}")
-        args = item.get("args", item.get("terms", []))
-        return (pred, *args)
-    if isinstance(item, (list, tuple)):
-        if not item:
-            raise DatalogError("empty fact")
-        return tuple(item)
-    raise DatalogError(f"cannot interpret fact: {item!r}")
+    match item:
+        case str():
+            atom = _parse_atom(item)
+            if atom.vars():
+                raise UnsafeRuleError(f"input fact contains variables: {item!r}")
+            return (atom.predicate, *(t.value for t in atom.terms))  # type: ignore[union-attr]
+        case dict():
+            pred = item.get("predicate") or item.get("pred")
+            if not pred:
+                raise DatalogError(f"fact dict missing 'predicate': {item!r}")
+            args = item.get("args", item.get("terms", []))
+            return (pred, *args)
+        case list() | tuple():
+            if not item:
+                raise DatalogError("empty fact")
+            return tuple(item)
+        case _:
+            raise DatalogError(f"cannot interpret fact: {item!r}")
 
 
 def atoms_to_facts(items: Iterable[Any]) -> set[GroundFact]:
@@ -594,9 +592,9 @@ def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
     """Assign each intensional predicate a stratum number.
 
     Constraint: for a rule with head P,
-      * positive body pred Q (intensional) ⟹ stratum(P) >= stratum(Q)
-      * negated  body pred Q (intensional) ⟹ stratum(P) >  stratum(Q)
-    A program recursing through negation has no finite assignment → error.
+      * positive body pred Q (intensional) => stratum(P) >= stratum(Q)
+      * negated  body pred Q (intensional) => stratum(P) >  stratum(Q)
+    A program recursing through negation has no finite assignment -> error.
     """
     stratum: dict[str, int] = {p: 0 for p in intensional}
     max_iters = len(intensional) + 1
@@ -617,7 +615,7 @@ def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
         if not changed:
             break
     else:
-        # Did not converge within the bound → negative cycle.
+        # Did not converge within the bound -> negative cycle.
         raise StratificationError(
             "program cannot be stratified: recursion through negation detected"
         )
@@ -655,24 +653,26 @@ def _match_body(
             yield dict(binding), list(support)
             return
         lit = body[i]
-        if isinstance(lit, Comparison):
-            if _eval_comparison(lit, binding):
-                yield from rec(i + 1, binding, support)
-            return
-        if lit.negated:
-            ground = _ground_atom(lit, binding)
-            if ground not in db:  # negation as failure
-                yield from rec(i + 1, binding, support)
-            return
-        # Positive atom: join with every matching ground fact.
-        for f in db:
-            if f[0] != lit.predicate or (len(f) - 1) != lit.arity:
-                continue
-            nb = _unify(lit.terms, f[1:], binding)
-            if nb is not None:
-                support.append(f)
-                yield from rec(i + 1, nb, support)
-                support.pop()
+        match lit:
+            case Comparison():
+                if _eval_comparison(lit, binding):
+                    yield from rec(i + 1, binding, support)
+                return
+            case Atom(negated=True):
+                ground = _ground_atom(lit, binding)
+                if ground not in db:  # negation as failure
+                    yield from rec(i + 1, binding, support)
+                return
+            case Atom():
+                # Positive atom: join with every matching ground fact.
+                for f in db:
+                    if f[0] != lit.predicate or (len(f) - 1) != lit.arity:
+                        continue
+                    nb = _unify(lit.terms, f[1:], binding)
+                    if nb is not None:
+                        support.append(f)
+                        yield from rec(i + 1, nb, support)
+                        support.pop()
 
     yield from rec(0, {}, [])
 
@@ -681,28 +681,31 @@ def _unify(terms: tuple[Term, ...], values: tuple[Any, ...], binding: dict[str, 
     nb = binding
     copied = False
     for term, value in zip(terms, values):
-        if isinstance(term, Const):
-            if term.value != value:
-                return None
-        else:  # Var
-            if term.name in nb:
-                if nb[term.name] != value:
+        match term:
+            case Const(value=v):
+                if v != value:
                     return None
-            else:
-                if not copied:
-                    nb = dict(nb)
-                    copied = True
-                nb[term.name] = value
+            case Var(name=n):
+                if n in nb:
+                    if nb[n] != value:
+                        return None
+                else:
+                    if not copied:
+                        nb = dict(nb)
+                        copied = True
+                    nb[n] = value
     return nb
 
 
 def _resolve(term: Term, binding: dict[str, Any]) -> Any:
-    if isinstance(term, Const):
-        return term.value
-    if term.name not in binding:
-        # Safety checking guarantees this never happens for compiled rules.
-        raise UnsafeRuleError(f"unbound variable ?{term.name} at evaluation time")
-    return binding[term.name]
+    match term:
+        case Const(value=v):
+            return v
+        case Var(name=n):
+            if n not in binding:
+                # Safety checking guarantees this never happens for compiled rules.
+                raise UnsafeRuleError(f"unbound variable ?{n} at evaluation time")
+            return binding[n]
 
 
 def _ground_atom(atom: Atom, binding: dict[str, Any]) -> GroundFact:

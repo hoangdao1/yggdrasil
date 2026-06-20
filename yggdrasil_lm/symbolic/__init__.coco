@@ -22,8 +22,6 @@ Public API::
     assert ("ancestor", "alice", "carol") in sol.facts
 """
 
-from __future__ import annotations
-
 from .datalog import (
     Atom,
     Comparison,

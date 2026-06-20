@@ -4,8 +4,6 @@ Edges are typed, weighted, and temporally valid.
 Multiple edge types can exist between the same two nodes (multi-relational graph).
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
