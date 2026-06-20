@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "coconut>=3.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -38,7 +38,7 @@ openai      = ["openai>=1.0"]
 neo4j       = ["neo4j>=5.0"]
 claude-code = ["claude-agent-sdk>=0.1"]
 embeddings  = ["sentence-transformers>=3.0"]
-dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "rich>=13.0"]
+dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "rich>=13.0", "coconut>=3.0"]
 observe     = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 viz         = ["fastapi>=0.100", "uvicorn>=0.24", "websockets>=11.0"]
 
@@ -51,6 +51,13 @@ Homepage = "https://github.com/hoangdao1/yggdrasil"
 Repository = "https://github.com/hoangdao1/yggdrasil"
 Issues = "https://github.com/hoangdao1/yggdrasil/issues"
 Documentation = "https://github.com/hoangdao1/yggdrasil#readme"
+
+[tool.hatch.build.hooks.coconut]
+path = "hatch_coconut_hook.py"
+
+[tool.coconut]
+target = "sys"
+strict = false
 
 [tool.hatch.build.targets.wheel]
 packages = ["yggdrasil_lm"]

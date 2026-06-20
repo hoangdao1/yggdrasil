@@ -23,8 +23,6 @@ Improvements over pure rank-based RRF:
   matching concepts, providing a structured signal on top of embeddings.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -89,20 +87,21 @@ async def semantic_search(
     # tool_to_agents: agent_id → list of (AgentNode, ToolNode, cosine_score, edge_weight)
     tool_to_agents: dict[str, list[tuple[AgentNode, ToolNode, float, float]]] = {}
     for tool_node, tool_score in tool_hits:
-        if not isinstance(tool_node, ToolNode):
-            continue
-        parent_edges = await store.get_edges(
-            tool_node.node_id, edge_type=EdgeType.HAS_TOOL, direction="in"
-        )
-        for edge in parent_edges:
-            parent = await store.get_node(edge.src_id)
-            if parent and isinstance(parent, AgentNode) and parent.is_valid:
-                agent_id = parent.node_id
-                if agent_id not in tool_to_agents:
-                    tool_to_agents[agent_id] = []
-                tool_to_agents[agent_id].append(
-                    (parent, tool_node, tool_score, edge.weight)
+        match tool_node:
+            case ToolNode():
+                parent_edges = await store.get_edges(
+                    tool_node.node_id, edge_type=EdgeType.HAS_TOOL, direction="in"
                 )
+                for edge in parent_edges:
+                    parent = await store.get_node(edge.src_id)
+                    match parent:
+                        case AgentNode() if parent.is_valid:
+                            agent_id = parent.node_id
+                            if agent_id not in tool_to_agents:
+                                tool_to_agents[agent_id] = []
+                            tool_to_agents[agent_id].append(
+                                (parent, tool_node, tool_score, edge.weight)
+                            )
 
     # Step 3: Build rank lookup for direct agent hits
     agent_rank_score: dict[str, tuple[int, float]] = {
@@ -116,22 +115,22 @@ async def semantic_search(
 
     # From direct agent hits — score = w_agent * cosine / (rank + k)
     for rank, (node, cosine) in enumerate(agent_hits):
-        if not isinstance(node, AgentNode):
-            continue
-        candidates[node.node_id] = {
-            "agent":       node,
-            "agent_score": w_agent * cosine / (rank + k),
-            "tool_score":  0.0,
-            "via_tools":   [],
-            "tool_scores": [],
-        }
+        match node:
+            case AgentNode():
+                candidates[node.node_id] = {
+                    "agent":       node,
+                    "agent_score": w_agent * cosine / (rank + k),
+                    "tool_score":  0.0,
+                    "via_tools":   [],
+                    "tool_scores": [],
+                }
 
     # From tool-inferred agents — score = w_tool * cosine * edge_weight / (rank + k)
     for agent_id, entries in tool_to_agents.items():
         # Pick the entry whose tool has the best (lowest) rank
         best_entry = min(
             entries,
-            key=lambda e: tool_rank_score.get(e[1].node_id, (top_k_tools, 0.0))[0],
+            key=e -> tool_rank_score.get(e[1].node_id, (top_k_tools, 0.0))[0],
         )
         best_rank, best_cosine = tool_rank_score.get(
             best_entry[1].node_id, (top_k_tools, 0.0)
@@ -165,7 +164,7 @@ async def semantic_search(
     # Step 5: Rank by fused score
     ranked = sorted(
         candidates.values(),
-        key=lambda c: c["agent_score"] + c["tool_score"],
+        key=c -> c["agent_score"] + c["tool_score"],
         reverse=True,
     )
 

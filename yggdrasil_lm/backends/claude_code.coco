@@ -18,8 +18,6 @@ Requirements:
     pip install 'yggdrasil[claude-code]'
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import os
@@ -162,12 +160,14 @@ def _validate_tool_args(args: dict[str, Any], schema: dict[str, Any], tool_name:
 
 
 def _format_tool_content(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    try:
-        return json.dumps(result, default=str, sort_keys=True)
-    except TypeError:
-        return str(result)
+    match result:
+        case str():
+            return result
+        case _:
+            try:
+                return json.dumps(result, default=str, sort_keys=True)
+            except TypeError:
+                return str(result)
 
 
 def _extract_tool_event(block: Any) -> dict[str, Any]:
@@ -463,7 +463,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                 ctx, "tool_result", tool_node.node_id, tool_node.name,
                 payload={
                     "tool_name": tool_node.name,
-                    "output_summary": _summarise(_format_tool_content(result)),
+                    "output_summary": result |> _format_tool_content |> _summarise,
                     "success": success,
                     "source": "claude_code_mcp",
                 },
@@ -576,17 +576,18 @@ class ClaudeCodeExecutor(GraphExecutor):
         tool_events: list[dict[str, Any]] = []
 
         async for message in cc_query(prompt=prompt, options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if ToolUseBlock and isinstance(block, ToolUseBlock):
-                        tool_call_count += 1
-                        tool_events.append(_extract_tool_event(block))
-            elif isinstance(message, ResultMessage):
-                if getattr(message, "is_error", False):
-                    subtype = getattr(message, "subtype", "unknown")
-                    raise ClaudeCodeAgentError(subtype, message.result or "")
-                result_text = message.result or ""
-                cost_usd = getattr(message, "total_cost_usd", None)
+            match message:
+                case AssistantMessage():
+                    for block in message.content:
+                        if ToolUseBlock and isinstance(block, ToolUseBlock):
+                            tool_call_count += 1
+                            tool_events.append(_extract_tool_event(block))
+                case ResultMessage():
+                    if getattr(message, "is_error", False):
+                        subtype = getattr(message, "subtype", "unknown")
+                        raise ClaudeCodeAgentError(subtype, message.result or "")
+                    result_text = message.result or ""
+                    cost_usd = getattr(message, "total_cost_usd", None)
 
         return _AgentRunResult(
             text=result_text,
@@ -605,18 +606,19 @@ class ClaudeCodeExecutor(GraphExecutor):
         async with ClaudeSDKClient(options=options) as client:
             await client.query(prompt)
             async for message in client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
-                        if ToolUseBlock and isinstance(block, ToolUseBlock):
-                            tool_call_count += 1
-                            tool_events.append(_extract_tool_event(block))
-                elif isinstance(message, ResultMessage):
-                    if getattr(message, "is_error", False):
-                        subtype = getattr(message, "subtype", "unknown")
-                        raise ClaudeCodeAgentError(subtype, message.result or "")
-                    cost_usd = getattr(message, "total_cost_usd", None)
+                match message:
+                    case AssistantMessage():
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                parts.append(block.text)
+                            if ToolUseBlock and isinstance(block, ToolUseBlock):
+                                tool_call_count += 1
+                                tool_events.append(_extract_tool_event(block))
+                    case ResultMessage():
+                        if getattr(message, "is_error", False):
+                            subtype = getattr(message, "subtype", "unknown")
+                            raise ClaudeCodeAgentError(subtype, message.result or "")
+                        cost_usd = getattr(message, "total_cost_usd", None)
 
         return _AgentRunResult(
             text="\n".join(parts),

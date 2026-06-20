@@ -106,11 +106,11 @@ async def _store_to_snapshot(store: GraphStore) -> dict[str, Any]:
         "nodes": nodes,
         "edges": edges,
         "nodes_by_type": {
-            key: sorted(value, key=lambda item: (item.get("name", ""), item.get("node_id", "")))
+            key: sorted(value, key=item -> (item.get("name", ""), item.get("node_id", "")))
             for key, value in sorted(nodes_by_type.items())
         },
         "edges_by_type": {
-            key: sorted(value, key=lambda item: (item.get("src_id", ""), item.get("dst_id", "")))
+            key: sorted(value, key=item -> (item.get("src_id", ""), item.get("dst_id", "")))
             for key, value in sorted(edges_by_type.items())
         },
     }

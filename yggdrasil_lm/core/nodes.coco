@@ -4,8 +4,6 @@ Every node in the graph is a typed, temporally-valid, embeddable object.
 Node type determines execution behavior in the GraphExecutor.
 """
 
-from __future__ import annotations
-
 import uuid
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -176,7 +174,7 @@ class AgentNode(Node):
     max_iterations: int      = 10
 
     # intent → node_id | "__END__"
-    routing_table:  dict[str, str] = Field(default_factory=lambda: {"default": "__END__"})
+    routing_table:  dict[str, str] = Field(default_factory= -> {"default": "__END__"})
     route_rules: list[RouteRule] = Field(default_factory=list)
     decision_table: DecisionTable | None = None
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)

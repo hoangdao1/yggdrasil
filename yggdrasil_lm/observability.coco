@@ -4,8 +4,6 @@ This module is the canonical home for functions that return typed objects
 from an execution trace. It does NOT render to a terminal or start a server.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -99,23 +97,23 @@ class TraceView:
 def extract_trace_view(events: list[TraceEvent]) -> TraceView:
     view = TraceView()
     for event in events:
-        t = event.event_type
-        if t == "hop":
-            view.hops.append(event)
-        elif t == "agent_start":
-            view.agent_starts.append(event)
-        elif t == "agent_end":
-            view.agent_ends.append(event)
-        elif t == "tool_call":
-            view.tool_calls.append(event)
-        elif t == "tool_result":
-            view.tool_results.append(event)
-        elif t == "context_inject":
-            view.context_inject.append(event)
-        elif t == "routing":
-            view.routing.append(event)
-        elif t == "pause":
-            view.pauses.append(event)
+        match event.event_type:
+            case "hop":
+                view.hops.append(event)
+            case "agent_start":
+                view.agent_starts.append(event)
+            case "agent_end":
+                view.agent_ends.append(event)
+            case "tool_call":
+                view.tool_calls.append(event)
+            case "tool_result":
+                view.tool_results.append(event)
+            case "context_inject":
+                view.context_inject.append(event)
+            case "routing":
+                view.routing.append(event)
+            case "pause":
+                view.pauses.append(event)
     return view
 
 

@@ -11,8 +11,6 @@ keyword parameter; the executor injects it automatically (see
 ``app.use_default_tools()`` or ``executor.register_tool(ref, fn)``.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from yggdrasil_lm.core.edges import EdgeType

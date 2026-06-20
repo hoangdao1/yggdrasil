@@ -46,8 +46,6 @@ Quick start
 Requires: pip install 'yggdrasil[observe]'
 """
 
-from __future__ import annotations
-
 import json
 import uuid
 from datetime import datetime, timezone
@@ -263,30 +261,31 @@ def _export_agent(
     ) as agent_span:
         # Emit non-span child events as OTel Events
         for child in agent_children:
-            if child.event_type == "context_inject":
-                agent_span.add_event(
-                    "context_inject",
-                    attributes={
-                        "context.names":  json.dumps(child.payload.get("context_names", [])),
-                        "context.count":  child.payload.get("count", 0),
-                    },
-                    timestamp=_to_ns(child.timestamp),
-                )
-            elif child.event_type == "routing":
-                cp = child.payload
-                route_attrs: dict[str, Any] = {
-                    "routing.intent":      cp.get("intent", ""),
-                    "routing.next_node_id": cp.get("next_node_id") or "__END__",
-                }
-                if cp.get("confidence") is not None:
-                    route_attrs["routing.confidence"] = cp["confidence"]
-                agent_span.add_event(
-                    "routing",
-                    attributes=route_attrs,
-                    timestamp=_to_ns(child.timestamp),
-                )
-            elif child.event_type == "tool_call":
-                _export_tool(tracer, child, children, trace_id=trace_id)
+            match child.event_type:
+                case "context_inject":
+                    agent_span.add_event(
+                        "context_inject",
+                        attributes={
+                            "context.names":  json.dumps(child.payload.get("context_names", [])),
+                            "context.count":  child.payload.get("count", 0),
+                        },
+                        timestamp=_to_ns(child.timestamp),
+                    )
+                case "routing":
+                    cp = child.payload
+                    route_attrs: dict[str, Any] = {
+                        "routing.intent":      cp.get("intent", ""),
+                        "routing.next_node_id": cp.get("next_node_id") or "__END__",
+                    }
+                    if cp.get("confidence") is not None:
+                        route_attrs["routing.confidence"] = cp["confidence"]
+                    agent_span.add_event(
+                        "routing",
+                        attributes=route_attrs,
+                        timestamp=_to_ns(child.timestamp),
+                    )
+                case "tool_call":
+                    _export_tool(tracer, child, children, trace_id=trace_id)
 
         agent_span.end(end_time=end_ns)
 
@@ -354,20 +353,17 @@ def _hop_times(
         return start, start + hop.duration_ms * 1_000_000
 
     if hop_children:
-        timestamps = [_to_ns(e.timestamp) for e in hop_children]
+        timestamps = hop_children |> map$(e -> _to_ns(e.timestamp)) |> list
         start_ns = min(timestamps)
 
-        # Use agent_end duration to find the true end
         agent_ends = [
-            e for child in hop_children
-            for e in [child]
-            if child.event_type == "agent_end" and child.duration_ms
+            e for e in hop_children
+            if e.event_type == "agent_end" and e.duration_ms
         ]
         if agent_ends:
-            end_ns = max(
-                _to_ns(e.timestamp) + e.duration_ms * 1_000_000  # type: ignore[operator]
-                for e in agent_ends
-            )
+            end_ns = agent_ends
+                |> map$(e -> _to_ns(e.timestamp) + e.duration_ms * 1_000_000)
+                |> max
         else:
             end_ns = max(timestamps) + 1_000_000  # +1ms fallback
 

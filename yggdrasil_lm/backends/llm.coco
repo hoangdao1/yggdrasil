@@ -15,8 +15,6 @@ Usage:
     executor = GraphExecutor(store, backend=backend)
 """
 
-from __future__ import annotations
-
 import json
 import os
 from abc import ABC, abstractmethod
@@ -199,7 +197,7 @@ class OpenAIBackend(LLMBackend):
             "messages":   oai_messages,
         }
         if tools:
-            kwargs["tools"] = [_anthropic_to_openai_tool(t) for t in tools]
+            kwargs["tools"] = tools |> map$(t -> _anthropic_to_openai_tool(t)) |> list
 
         response = await self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
@@ -278,36 +276,36 @@ def _anthropic_to_openai_content(content: list[dict[str, Any]]) -> list[dict[str
     """
     result: list[dict[str, Any]] = []
     for block in content:
-        btype = block.get("type")
-        if btype == "text":
-            result.append({"type": "text", "text": block.get("text", "")})
-        elif btype == "image":
-            source = block.get("source", {})
-            stype = source.get("type")
-            if stype == "base64":
-                url = f"data:{source['media_type']};base64,{source['data']}"
-            elif stype == "url":
-                url = source["url"]
-            else:
-                continue  # unsupported source type — skip
-            result.append({"type": "image_url", "image_url": {"url": url}})
-        elif btype == "image_url":
-            # Already in OpenAI format — pass through
-            result.append(block)
-        # Other block types (document, tool_result, etc.) are not converted
+        match block.get("type"):
+            case "text":
+                result.append({"type": "text", "text": block.get("text", "")})
+            case "image":
+                source = block.get("source", {})
+                match source.get("type"):
+                    case "base64":
+                        url = f"data:{source['media_type']};base64,{source['data']}"
+                        result.append({"type": "image_url", "image_url": {"url": url}})
+                    case "url":
+                        url = source["url"]
+                        result.append({"type": "image_url", "image_url": {"url": url}})
+                    case _:
+                        pass  # unsupported source type — skip
+            case "image_url":
+                # Already in OpenAI format — pass through
+                result.append(block)
+            case _:
+                pass  # Other block types (document, tool_result, etc.) are not converted
     return result
 
 
 def _convert_messages_for_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a copy of *messages* with list-typed content converted to OpenAI format."""
-    result = []
-    for msg in messages:
-        content = msg.get("content")
-        if isinstance(content, list):
-            result.append({**msg, "content": _anthropic_to_openai_content(content)})
-        else:
-            result.append(msg)
-    return result
+    return [
+        {**msg, "content": _anthropic_to_openai_content(msg["content"])}
+        if isinstance(msg.get("content"), list)
+        else msg
+        for msg in messages
+    ]
 
 
 def default_backend() -> LLMBackend:
