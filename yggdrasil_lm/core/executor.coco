@@ -1072,6 +1072,16 @@ class GraphExecutor:
                 pause.node_name,
                 payload={"token": pause.token, "waiting_for": pause.waiting_for},
             )
+            # If the pause was a pause_before, clear that flag on the node so it
+            # doesn't immediately re-pause when revisited during the resumed run.
+            if pause.reason == "pause_before":
+                try:
+                    paused_node = await self.store.get_node(pause.node_id)
+                    if hasattr(paused_node, "pause_before"):
+                        paused_node.pause_before = False
+                        await self.store.upsert_node(paused_node)
+                except Exception:
+                    pass
         return await self.run(
             entry_node_id,
             ctx.query,
@@ -1721,6 +1731,14 @@ class GraphExecutor:
                 return
             wave += 1
             ready = list(sorter.get_ready())
+            # Skip nodes whose output is already cached in ctx.outputs (resume support:
+            # re-entering from the main entry skips previously completed nodes).
+            already_done = [nid for nid in ready if nid in ctx.outputs]
+            for nid in already_done:
+                sorter.done(nid)
+            ready = [nid for nid in ready if nid not in ctx.outputs]
+            if not ready:
+                continue
             remaining = max(ctx.max_hops - ctx.hop_count, 0)
             if remaining == 0:
                 return
