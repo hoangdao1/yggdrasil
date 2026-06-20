@@ -190,10 +190,13 @@ class OpenAIBackend(LLMBackend):
         if system:
             oai_messages.append({"role": "system", "content": system})
         oai_messages.extend(_convert_messages_for_openai(messages))
-        # Some models (e.g. Qwen3) require at least one user message.
-        # If the converted history has no user turn, inject a minimal one.
-        if not any(m.get("role") == "user" for m in oai_messages):
-            oai_messages.append({"role": "user", "content": "Begin."})
+        # Qwen3 requires the first non-system message to be a user message.
+        # After tool calls extend_messages returns [assistant, tool, ...] with no leading
+        # user turn, so inject one right after the system message when needed.
+        system_count = sum(1 for m in oai_messages if m.get("role") == "system")
+        first_non_system = oai_messages[system_count] if len(oai_messages) > system_count else None
+        if first_non_system is None or first_non_system.get("role") != "user":
+            oai_messages.insert(system_count, {"role": "user", "content": "Begin."})
 
         kwargs: dict[str, Any] = {
             "model":      model,
