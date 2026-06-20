@@ -9,3 +9,7 @@ __pycache__/
 *.pyo
 .DS_Store
 dist/
+
+# Coconut cache (generated — not committed; compiled .py files ARE committed)
+__coconut_cache__/
+uv.lock
