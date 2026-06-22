@@ -10,6 +10,8 @@ __pycache__/
 .DS_Store
 dist/
 
-# Coconut cache (generated — not committed; compiled .py files ARE committed)
+# Coconut — cache and compiled output (generated from .coco sources)
 __coconut_cache__/
+yggdrasil_lm/**/*.py
+yggdrasil_lm/*.py
 uv.lock
