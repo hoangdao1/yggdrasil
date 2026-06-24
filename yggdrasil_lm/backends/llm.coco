@@ -166,8 +166,9 @@ class OpenAIBackend(LLMBackend):
 
     def __init__(
         self,
-        base_url: str | None = None,
-        api_key:  str        = "local",
+        base_url:    str | None   = None,
+        api_key:     str          = "local",
+        temperature: float | None = None,
         **kwargs: Any,
     ) -> None:
         try:
@@ -177,6 +178,10 @@ class OpenAIBackend(LLMBackend):
                 "openai package required: pip install 'yggdrasil[openai]'"
             )
         self._client = AsyncOpenAI(base_url=base_url, api_key=api_key, **kwargs)
+        # When set, sent on every completion. Local tool-calling models are far
+        # more reliable at emitting well-formed tool calls at a low temperature;
+        # left None it preserves the server/default sampling.
+        self._temperature = temperature
 
     async def chat(
         self,
@@ -203,6 +208,8 @@ class OpenAIBackend(LLMBackend):
             "max_tokens": max_tokens,
             "messages":   oai_messages,
         }
+        if self._temperature is not None:
+            kwargs["temperature"] = self._temperature
         if tools:
             kwargs["tools"] = tools |> map$(t -> _anthropic_to_openai_tool(t)) |> list
 
