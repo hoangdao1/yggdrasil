@@ -49,6 +49,7 @@ If you are new to the project, use this order:
 
 Skip these until later:
 
+- [Capturing Domain Knowledge](docs/domain-knowledge-graphs.md)
 - [Advanced configuration](docs/advanced-configuration.md)
 - [Batch execution](docs/batch-execution.md)
 - [Long-running workflows](docs/long-running-workflows.md)

@@ -469,12 +469,15 @@ class Node(BaseModel):
     node_type:  NodeType             # default: NodeType.CONTEXT
     name:       str                  # default: ""
     description: str                 # default: ""
+    domain_type: str | None          # default: None  (consumer KG subtype)
     embedding:  list[float] | None   # default: None
     valid_at:   datetime             # default: utcnow()
     invalid_at: datetime | None      # default: None  (None = still active)
     attributes: dict[str, Any]       # default: {}
     group_id:   str                  # default: "default"
 ```
+
+> **`domain_type`** is an optional, domain-agnostic label for layering a **consumer knowledge graph** on top of the orchestration graph (e.g. `"customer"`, `"order"`, `"product"`). yggdrasil never interprets it. Set it on `CONTEXT` nodes to model domain entities without widening the frozen `NodeType` enum, then query with `list_nodes(domain_type=...)`.
 
 **Properties**
 
@@ -1072,7 +1075,10 @@ class EdgeType(StrEnum):
     SIMILAR_TO   = "SIMILAR_TO"    # any → any  (semantic similarity)
     VALIDATES    = "VALIDATES"     # schema → tool/context
     CONTAINS     = "CONTAINS"      # graph-node → node  (sub-graph membership)
+    RELATES      = "RELATES"       # any → any  (consumer domain relationship)
 ```
+
+`RELATES` is the **domain-agnostic** edge type for consumer knowledge graphs: the specific relationship name lives in `Edge.relation` (e.g. `"targets"`, `"presented_by"`) rather than as a new `EdgeType` member, so domain modelling never requires widening this enum. Create them with `Edge.relates(...)` and query with `list_edges(relation=...)` / `get_edges(..., relation=...)`.
 
 `COVERS`, `MENTIONS`, and `NEXT` are created and consumed by `ContextNavigator` during context expansion. User code rarely constructs these edges directly — they emerge from `ContextNavigator` traversal and are filtered internally. You can inspect them via `store.get_edges()` but you do not need to create them.
 
@@ -1088,6 +1094,7 @@ class Edge(BaseModel):
     dst_id:     str                 # destination node ID
     weight:     float               # default: 1.0
     description: str                # default: ""
+    relation:   str | None          # default: None  (domain label for RELATES edges)
     attributes: dict[str, Any]      # default: {}
     valid_at:   datetime            # default: utcnow()
     invalid_at: datetime | None     # default: None
@@ -1116,6 +1123,7 @@ class Edge(BaseModel):
 | `delegates_to` | `(src_id, dst_id, **kw) -> Edge` | `DELEGATES_TO` edge |
 | `produces` | `(src_id, dst_id, **kw) -> Edge` | `PRODUCES` edge |
 | `similar_to` | `(src_id, dst_id, weight=1.0, **kw) -> Edge` | `SIMILAR_TO` edge |
+| `relates` | `(src_id, dst_id, relation, **kw) -> Edge` | `RELATES` edge carrying a domain `relation` label |
 
 **Tutorial**
 
@@ -1166,6 +1174,7 @@ class GraphStore(ABC):
         edge_type:  EdgeType | None = None,
         direction:  str = "out",       # "out" | "in" | "both"
         only_valid: bool = True,
+        relation:   str | None = None, # filter RELATES edges by domain label
     ) -> list[Edge]
 
     async def neighbors(
@@ -1189,7 +1198,15 @@ class GraphStore(ABC):
         node_type: NodeType | None = None,
         group_id:  str | None = None,
         only_valid: bool = True,
+        domain_type: str | None = None,  # filter by consumer KG subtype
     ) -> list[AnyNode]
+
+    async def list_edges(
+        edge_type: EdgeType | None = None,
+        group_id:  str | None = None,
+        only_valid: bool = True,
+        relation:  str | None = None,    # filter RELATES edges by domain label
+    ) -> list[Edge]
 ```
 
 **Convenience methods** (implemented on the ABC using the above)

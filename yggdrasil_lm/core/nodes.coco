@@ -113,7 +113,7 @@ class Node(BaseModel):
     - Identity: node_id, node_type, name, description
     - Retrieval: embedding (dense vector for similarity search)
     - Temporal validity: valid_at / invalid_at (bi-temporal, from Graphiti)
-    - Extensibility: attributes dict
+    - Extensibility: attributes dict, domain_type (consumer knowledge-graph subtype)
     - Multi-tenancy: group_id
     """
 
@@ -121,6 +121,12 @@ class Node(BaseModel):
     node_type:   NodeType = NodeType.CONTEXT
     name:        str      = ""
     description: str      = ""
+
+    # Optional consumer-defined domain subtype for knowledge-graph nodes
+    # (e.g. "customer", "order", "product"). Domain-agnostic: yggdrasil never
+    # interprets this value — it lets consumers layer a typed domain graph
+    # (typically on CONTEXT nodes) without widening the frozen NodeType enum.
+    domain_type: str | None = None
 
     # Dense vector for similarity retrieval (populated by embedder)
     embedding:   list[float] | None = None
