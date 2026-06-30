@@ -61,6 +61,10 @@ strict = false
 
 [tool.hatch.build.targets.wheel]
 packages = ["yggdrasil_lm"]
+# Coconut compiles .coco -> .py during the build hook; those .py are
+# git-ignored, so force-include them as build artifacts or the wheel ships
+# source-only and is non-importable.
+artifacts = ["yggdrasil_lm/**/*.py"]
 
 [tool.hatch.build.targets.sdist]
 include = [
