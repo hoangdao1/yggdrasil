@@ -45,8 +45,9 @@ class GraphStore(ABC):
         edge_type: EdgeType | None = None,
         direction: str = "out",        # "out" | "in" | "both"
         only_valid: bool = True,
+        relation: str | None = None,
     ) -> list[Edge]:
-        """Return edges connected to node_id, optionally filtered by type and direction."""
+        """Return edges connected to node_id, optionally filtered by type, direction, and domain relation."""
 
     @abstractmethod
     async def neighbors(
@@ -82,8 +83,9 @@ class GraphStore(ABC):
         node_type: NodeType | None = None,
         group_id: str | None = None,
         only_valid: bool = True,
+        domain_type: str | None = None,
     ) -> list[AnyNode]:
-        """List nodes, optionally filtered."""
+        """List nodes, optionally filtered (including by consumer domain_type)."""
 
     @abstractmethod
     async def list_edges(
@@ -91,8 +93,9 @@ class GraphStore(ABC):
         edge_type: EdgeType | None = None,
         group_id: str | None = None,
         only_valid: bool = True,
+        relation: str | None = None,
     ) -> list[Edge]:
-        """List edges, optionally filtered."""
+        """List edges, optionally filtered (including by consumer domain relation)."""
 
     # ------------------------------------------------------------------
     # Convenience helpers (implemented in terms of abstract methods)
@@ -254,6 +257,7 @@ class NetworkXGraphStore(GraphStore):
         edge_type: EdgeType | None = None,
         direction: str = "out",
         only_valid: bool = True,
+        relation: str | None = None,
     ) -> list[Edge]:
         match direction:
             case "out":
@@ -276,6 +280,8 @@ class NetworkXGraphStore(GraphStore):
             if only_valid and not edge.is_valid:
                 continue
             if edge_type is not None and edge.edge_type != edge_type:
+                continue
+            if relation is not None and edge.relation != relation:
                 continue
             results.append(edge)
         return results
@@ -313,6 +319,7 @@ class NetworkXGraphStore(GraphStore):
         node_type: NodeType | None = None,
         group_id: str | None = None,
         only_valid: bool = True,
+        domain_type: str | None = None,
     ) -> list[AnyNode]:
         results = []
         for node in self._nodes.values():
@@ -322,6 +329,8 @@ class NetworkXGraphStore(GraphStore):
                 continue
             if group_id is not None and node.group_id != group_id:
                 continue
+            if domain_type is not None and node.domain_type != domain_type:
+                continue
             results.append(node)
         return results
 
@@ -330,6 +339,7 @@ class NetworkXGraphStore(GraphStore):
         edge_type: EdgeType | None = None,
         group_id: str | None = None,
         only_valid: bool = True,
+        relation: str | None = None,
     ) -> list[Edge]:
         results = []
         for edge in self._edges.values():
@@ -338,6 +348,8 @@ class NetworkXGraphStore(GraphStore):
             if edge_type is not None and edge.edge_type != edge_type:
                 continue
             if group_id is not None and edge.group_id != group_id:
+                continue
+            if relation is not None and edge.relation != relation:
                 continue
             results.append(edge)
         return results
