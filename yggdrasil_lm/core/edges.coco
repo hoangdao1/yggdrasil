@@ -52,6 +52,11 @@ class EdgeType(StrEnum):
     # Meta-graph edges
     CONTAINS     = "CONTAINS"      # graph-node → node (sub-graph membership)
 
+    # Domain edges — consumer-defined knowledge-graph relationships.
+    # Domain-agnostic: the specific relation name lives in Edge.relation;
+    # yggdrasil itself never interprets it.
+    RELATES      = "RELATES"       # any → any (consumer domain relationship)
+
 
 # ---------------------------------------------------------------------------
 # Edge model
@@ -77,6 +82,11 @@ class Edge(BaseModel):
 
     # Optional LLM-generated or human-written relationship summary.
     description: str     = ""
+
+    # Domain relation label for RELATES edges (e.g. "targets", "presented_by").
+    # Domain-agnostic: yggdrasil never interprets this value — it exists so
+    # consumers can model a typed knowledge graph without widening EdgeType.
+    relation:    str | None = None
 
     # Extensible metadata
     attributes:  dict[str, Any] = Field(default_factory=dict)
@@ -131,3 +141,13 @@ class Edge(BaseModel):
     @classmethod
     def similar_to(cls, src_id: str, dst_id: str, weight: float = 1.0, **kw: Any) -> "Edge":
         return cls(edge_type=EdgeType.SIMILAR_TO, src_id=src_id, dst_id=dst_id, weight=weight, **kw)
+
+    @classmethod
+    def relates(cls, src_id: str, dst_id: str, relation: str, **kw: Any) -> "Edge":
+        """Create a RELATES edge carrying a consumer-defined `relation` label.
+
+        Use this to model domain knowledge graphs (e.g. a form field that a
+        rule `targets`, or a widget that `presents` a field) without adding
+        domain-specific entries to EdgeType.
+        """
+        return cls(edge_type=EdgeType.RELATES, src_id=src_id, dst_id=dst_id, relation=relation, **kw)

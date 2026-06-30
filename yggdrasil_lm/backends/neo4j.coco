@@ -101,6 +101,7 @@ class Neo4jGraphStore(GraphStore):
         edge_type: EdgeType | None = None,
         direction: str = "out",
         only_valid: bool = True,
+        relation: str | None = None,
     ) -> list[Edge]:
         rel = f":{edge_type.upper()}" if edge_type else ""
 
@@ -119,6 +120,8 @@ class Neo4jGraphStore(GraphStore):
             async for record in result:
                 edge = record["props"] |> dict |> Edge.model_validate
                 if only_valid and not edge.is_valid:
+                    continue
+                if relation is not None and edge.relation != relation:
                     continue
                 edges.append(edge)
             return edges
@@ -197,12 +200,15 @@ class Neo4jGraphStore(GraphStore):
         node_type: NodeType | None = None,
         group_id: str | None = None,
         only_valid: bool = True,
+        domain_type: str | None = None,
     ) -> list[AnyNode]:
         filters = []
         if node_type:
             filters.append(f"n.node_type = '{node_type.value}'")
         if group_id:
             filters.append(f"n.group_id = '{group_id}'")
+        if domain_type:
+            filters.append(f"n.domain_type = '{domain_type}'")
         where = "WHERE " + " AND ".join(filters) if filters else ""
 
         cypher = f"MATCH (n:Node) {where} RETURN properties(n) AS props"
