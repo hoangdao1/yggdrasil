@@ -380,3 +380,33 @@ async def test_agent_error_emits_trace_event(store, agent):
     assert errors
     assert errors[0].payload["source"] == "claude_code"
     assert errors[0].payload["subtype"] == "auth"
+
+
+# ---------------------------------------------------------------------------
+# pause_before must be honored (this override replaces the base method)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_execute_agent_honors_pause_before(store):
+    """A pause_before AgentNode must suspend before any agent work — even the
+    entry node of a sub-graph step. Regression: the override previously dropped
+    the base GraphExecutor's pause_before gate, so human-review pauses were
+    silently skipped under the Claude Code executor."""
+    node = AgentNode(
+        name="gate", model="claude-haiku-4-5-20251001", system_prompt="s",
+        max_iterations=3, pause_before=True, wait_for_input="Approve to continue.",
+    )
+    await store.upsert_node(node)
+    ex = ClaudeCodeExecutor(store)
+    ctx = ExecutionContext(query="start")
+
+    # The pause is checked before the SDK guard, so it fires even with no SDK.
+    with patch("yggdrasil_lm.backends.claude_code._SDK_AVAILABLE", False):
+        result = await ex._execute_agent(node, ctx)
+
+    assert result["status"] == "paused"
+    assert ctx.is_paused()
+    pause = ctx.state.pending_pause
+    assert pause is not None
+    assert pause.reason == "pause_before"
+    assert pause.waiting_for == "Approve to continue."
