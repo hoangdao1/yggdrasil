@@ -400,6 +400,20 @@ class ClaudeCodeExecutor(GraphExecutor):
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
     ) -> dict[str, Any]:
+        # Honor pause_before, mirroring GraphExecutor._execute_agent. This override
+        # replaces the whole method, so without this a human-in-the-loop gate on an
+        # AgentNode (including the entry node of a sub-graph step) would be silently
+        # skipped under the Claude Code executor and the run would proceed past the
+        # intended review point. Suspend before doing any work (no SDK required).
+        if node.pause_before:
+            await self._pause_execution(
+                ctx,
+                node,
+                reason="pause_before",
+                waiting_for=node.wait_for_input,
+            )
+            return {"text": "", "intent": "default", "status": "paused"}
+
         if not _SDK_AVAILABLE:
             raise ImportError(
                 "claude-agent-sdk is required: pip install 'yggdrasil[claude-code]'"
