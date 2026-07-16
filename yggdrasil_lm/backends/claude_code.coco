@@ -82,6 +82,8 @@ class _AgentRunResult:
     text: str
     tool_calls: int
     cost_usd: float | None
+    tokens_in: int = 0
+    tokens_out: int = 0
     tool_events: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -176,6 +178,23 @@ def _extract_tool_event(block: Any) -> dict[str, Any]:
         "name": getattr(block, "name", "claude_code_builtin"),
         "input": getattr(block, "input", None),
     }
+
+
+def _split_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
+    """Reduce an Anthropic-shaped ``usage`` dict to (input, output) token totals.
+
+    Cache-creation and cache-read tokens are input-side, so they fold into the
+    input count. Returns (0, 0) when usage is missing (e.g. a non-Claude backend
+    or a failed call) so callers can accumulate unconditionally."""
+    if not usage:
+        return 0, 0
+    tokens_in = (
+        int(usage.get("input_tokens", 0) or 0)
+        + int(usage.get("cache_creation_input_tokens", 0) or 0)
+        + int(usage.get("cache_read_input_tokens", 0) or 0)
+    )
+    tokens_out = int(usage.get("output_tokens", 0) or 0)
+    return tokens_in, tokens_out
 
 
 def _build_mcp_server(
@@ -569,6 +588,8 @@ class ClaudeCodeExecutor(GraphExecutor):
                 "intent":       intent,
                 "iterations":   1,
                 "cost_usd":     run_result.cost_usd,
+                "tokens_in":    run_result.tokens_in,
+                "tokens_out":   run_result.tokens_out,
             },
             parent_event_id=agent_event_id,
             duration_ms=duration_ms,
@@ -587,6 +608,8 @@ class ClaudeCodeExecutor(GraphExecutor):
         result_text = ""
         tool_call_count = 0
         cost_usd: float | None = None
+        tokens_in = 0
+        tokens_out = 0
         tool_events: list[dict[str, Any]] = []
 
         async for message in cc_query(prompt=prompt, options=options):
@@ -602,11 +625,14 @@ class ClaudeCodeExecutor(GraphExecutor):
                         raise ClaudeCodeAgentError(subtype, message.result or "")
                     result_text = message.result or ""
                     cost_usd = getattr(message, "total_cost_usd", None)
+                    tokens_in, tokens_out = _split_tokens(getattr(message, "usage", None))
 
         return _AgentRunResult(
             text=result_text,
             tool_calls=tool_call_count,
             cost_usd=cost_usd,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             tool_events=tool_events,
         )
 
@@ -615,6 +641,8 @@ class ClaudeCodeExecutor(GraphExecutor):
         parts: list[str] = []
         tool_call_count = 0
         cost_usd: float | None = None
+        tokens_in = 0
+        tokens_out = 0
         tool_events: list[dict[str, Any]] = []
 
         async with ClaudeSDKClient(options=options) as client:
@@ -633,10 +661,13 @@ class ClaudeCodeExecutor(GraphExecutor):
                             subtype = getattr(message, "subtype", "unknown")
                             raise ClaudeCodeAgentError(subtype, message.result or "")
                         cost_usd = getattr(message, "total_cost_usd", None)
+                        tokens_in, tokens_out = _split_tokens(getattr(message, "usage", None))
 
         return _AgentRunResult(
             text="\n".join(parts),
             tool_calls=tool_call_count,
             cost_usd=cost_usd,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             tool_events=tool_events,
         )
