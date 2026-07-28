@@ -178,6 +178,10 @@ class AgentNode(Node):
     model:          str      = "claude-sonnet-4-6"
     system_prompt:  str      = ""
     max_iterations: int      = 10
+    # Output-token budget per LLM turn. Reasoning models need enough room for the
+    # chain-of-thought AND the answer/tool-call; too low and a turn truncates
+    # mid-thought. The executor may escalate above this on a max_tokens truncation.
+    max_tokens:     int      = 8096
 
     # intent → node_id | "__END__"
     routing_table:  dict[str, str] = Field(default_factory= -> {"default": "__END__"})

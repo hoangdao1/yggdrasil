@@ -34,12 +34,23 @@ __all__ = [
     "RecordingBackend",
     "end_turn",
     "tool_use",
+    "max_tokens_truncated",
 ]
 
 
-def end_turn(text: str) -> LLMResponse:
+def end_turn(text: str, reasoning: str = "") -> LLMResponse:
     """Build an end-of-turn LLM response carrying plain text."""
-    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn")
+    return LLMResponse(text=text, tool_calls=[], stop_reason="end_turn", reasoning=reasoning)
+
+
+def max_tokens_truncated(text: str = "", reasoning: str = "") -> LLMResponse:
+    """Build a turn truncated at the output-token limit (finish_reason='length').
+
+    Models the failure mode where a reasoning model spends its whole budget in the
+    chain-of-thought (`reasoning`) and returns no answer/tool call — the executor
+    should give it more room, not treat the empty result as done.
+    """
+    return LLMResponse(text=text, tool_calls=[], stop_reason="max_tokens", reasoning=reasoning)
 
 
 def tool_use(tool_id: str, name: str, input: dict[str, Any]) -> LLMResponse:
@@ -74,6 +85,9 @@ class StubBackend(LLMBackend):
         self._responses = responses
         self._index = 0
         self.calls: list[tuple[str, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
+        # Output-token budget seen on each chat() call, in order — lets tests assert
+        # the executor's max_tokens escalation on a truncated turn.
+        self.max_tokens_seen: list[int] = []
 
     async def chat(
         self,
@@ -84,6 +98,7 @@ class StubBackend(LLMBackend):
         max_tokens: int = 8096,
     ) -> LLMResponse:
         self.calls.append((model, system, list(messages), list(tools)))
+        self.max_tokens_seen.append(max_tokens)
         if callable(self._responses):
             return self._responses(model, system, messages, tools)
         responses = list(self._responses)
@@ -130,6 +145,7 @@ def _response_to_dict(resp: LLMResponse) -> dict[str, Any]:
         "text":        resp.text,
         "tool_calls":  [asdict(tc) for tc in resp.tool_calls],
         "stop_reason": resp.stop_reason,
+        "reasoning":   resp.reasoning,
     }
 
 
@@ -138,6 +154,7 @@ def _response_from_dict(data: dict[str, Any]) -> LLMResponse:
         text=data["text"],
         tool_calls=[ToolCall(**tc) for tc in data.get("tool_calls", [])],
         stop_reason=data["stop_reason"],
+        reasoning=data.get("reasoning", ""),
     )
 
 

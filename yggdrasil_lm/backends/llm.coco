@@ -46,7 +46,12 @@ class LLMResponse:
     """Backend-agnostic response from one LLM turn."""
     text:       str
     tool_calls: list[ToolCall]
-    stop_reason: str           # "end_turn" | "tool_use"
+    stop_reason: str           # "end_turn" | "tool_use" | "max_tokens"
+    # Chain-of-thought a reasoning model emitted in a side channel (OpenAI
+    # `reasoning_content`, Anthropic `thinking` blocks) rather than in `text`.
+    # Captured so the executor can (a) salvage it when `text` is empty and (b)
+    # tell "the model truncated mid-thought" apart from "the model is done".
+    reasoning:  str = ""
     _raw: Any = field(default=None, repr=False)  # backend raw object for message continuation
 
 
@@ -116,15 +121,31 @@ class AnthropicBackend(LLMBackend):
         response = await self._client.messages.create(**kwargs)
 
         text = ""
+        reasoning = ""
         tool_calls: list[ToolCall] = []
         for block in response.content:
-            if hasattr(block, "text"):
+            if getattr(block, "type", None) == "thinking":
+                # Extended-thinking block — chain-of-thought, not the answer.
+                reasoning += getattr(block, "thinking", "") or ""
+            elif hasattr(block, "text"):
                 text = block.text
             elif block.type == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
 
-        stop_reason = "tool_use" if response.stop_reason == "tool_use" else "end_turn"
-        return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason, _raw=response)
+        # Preserve a truncation signal ("max_tokens") distinctly from a genuine end
+        # of turn, so the executor can give a mid-thought-truncated turn more room
+        # instead of mistaking the empty result for completion.
+        match response.stop_reason:
+            case "tool_use":
+                stop_reason = "tool_use"
+            case "max_tokens":
+                stop_reason = "max_tokens"
+            case _:
+                stop_reason = "end_turn"
+        return LLMResponse(
+            text=text, tool_calls=tool_calls, stop_reason=stop_reason,
+            reasoning=reasoning, _raw=response,
+        )
 
     def extend_messages(
         self,
@@ -218,6 +239,11 @@ class OpenAIBackend(LLMBackend):
         msg    = choice.message
 
         text = msg.content or ""
+        # Reasoning models (Qwen3, DeepSeek-R1, GLM, …) put their chain-of-thought
+        # in a `reasoning_content` side channel and often leave `content` empty on a
+        # tool-calling turn. Capture it so the executor can salvage it / detect a
+        # mid-thought truncation rather than reading an empty `content` as "done".
+        reasoning = getattr(msg, "reasoning_content", None) or ""
         tool_calls: list[ToolCall] = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
@@ -227,8 +253,21 @@ class OpenAIBackend(LLMBackend):
                     input=json.loads(tc.function.arguments),
                 ))
 
-        stop_reason = "tool_use" if choice.finish_reason == "tool_calls" else "end_turn"
-        return LLMResponse(text=text, tool_calls=tool_calls, stop_reason=stop_reason, _raw=msg)
+        # `length` means the response was cut off at max_tokens — NOT that the model
+        # finished. Surfaced as a distinct stop_reason so the executor can retry with
+        # a larger budget instead of terminating the agent with an empty result (a
+        # reasoning-heavy model can spend the whole budget in `reasoning_content`).
+        match choice.finish_reason:
+            case "tool_calls":
+                stop_reason = "tool_use"
+            case "length":
+                stop_reason = "max_tokens"
+            case _:
+                stop_reason = "end_turn"
+        return LLMResponse(
+            text=text, tool_calls=tool_calls, stop_reason=stop_reason,
+            reasoning=reasoning, _raw=msg,
+        )
 
     def extend_messages(
         self,
