@@ -90,6 +90,68 @@ _MAX_TOKEN_ESCALATIONS = int(os.environ.get("YGG_MAX_TOKEN_ESCALATIONS", "2"))
 _TOKEN_ESCALATION_FACTOR = int(os.environ.get("YGG_TOKEN_ESCALATION_FACTOR", "2"))
 _TOKEN_ESCALATION_CAP = int(os.environ.get("YGG_TOKEN_ESCALATION_CAP", "32000"))
 
+# Bounded rolling history. In a long ReAct loop the message history only ever GROWS
+# (each turn appends the assistant message + its tool results), and every turn re-reads
+# ALL of it — so cost is O(turns × context). To bound the re-read, once the history is
+# long we SHRINK the content of older turns in place (clip long text + tool-result
+# bodies, keeping tool_use/tool_call blocks intact so pairing/caching stay valid),
+# while keeping the head (task/setup) and the most recent turns full. Batch-triggered
+# (every _HISTORY_COMPACT_EVERY turns) so the cache prefix is only invalidated
+# occasionally, not every turn. Env-tunable; _HISTORY_COMPACT_EVERY=0 disables it.
+_HISTORY_COMPACT_EVERY = int(os.environ.get("YGG_HISTORY_COMPACT_EVERY", "6"))
+_HISTORY_HEAD_KEEP = int(os.environ.get("YGG_HISTORY_HEAD_KEEP", "2"))
+_HISTORY_RECENT_KEEP = int(os.environ.get("YGG_HISTORY_RECENT_KEEP", "6"))
+_HISTORY_ELIDE_CHARS = int(os.environ.get("YGG_HISTORY_ELIDE_CHARS", "600"))
+_HISTORY_ELIDE_MARK = "…[history-elided]"
+
+
+def _clip_for_history(text: str) -> str:
+    """Clip an old message's text to a small head, marked so re-compaction is a no-op."""
+    if not isinstance(text, str) or len(text) <= _HISTORY_ELIDE_CHARS or _HISTORY_ELIDE_MARK in text:
+        return text
+    return text[:_HISTORY_ELIDE_CHARS] + f" {_HISTORY_ELIDE_MARK} (+{len(text) - _HISTORY_ELIDE_CHARS} chars)"
+
+
+def _shrink_message_content(msg: dict[str, Any]) -> None:
+    """Shrink one old message's bulky content IN PLACE, preserving tool_use/tool_call
+    blocks (pairing) and roles. Handles both Anthropic (content = str | list of blocks
+    incl. tool_use/tool_result) and OpenAI (content = str, plus a tool_calls key) shapes."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        msg["content"] = _clip_for_history(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "text" and isinstance(block.get("text"), str):
+                block["text"] = _clip_for_history(block["text"])
+            elif bt == "tool_result":
+                inner = block.get("content")
+                if isinstance(inner, str):
+                    block["content"] = _clip_for_history(inner)
+                elif isinstance(inner, list):
+                    for ib in inner:
+                        if isinstance(ib, dict) and isinstance(ib.get("text"), str):
+                            ib["text"] = _clip_for_history(ib["text"])
+            # tool_use / other blocks are left intact (needed for tool pairing).
+    # OpenAI 'tool' role messages carry their payload in 'content' (handled above);
+    # assistant 'tool_calls' are left untouched.
+
+
+def _compact_history(messages: list[dict[str, Any]]) -> None:
+    """Shrink the MIDDLE of a long message history in place — everything except the
+    first _HISTORY_HEAD_KEEP messages (task/setup) and the last _HISTORY_RECENT_KEEP
+    (the turns the model is actively working). No messages are removed (tool pairing
+    stays valid); only bulky old content is clipped. Idempotent (marked clips are
+    skipped), so re-running only touches newly-aged messages."""
+    n = len(messages)
+    if n <= _HISTORY_HEAD_KEEP + _HISTORY_RECENT_KEEP:
+        return
+    for msg in messages[_HISTORY_HEAD_KEEP : n - _HISTORY_RECENT_KEEP]:
+        if isinstance(msg, dict):
+            _shrink_message_content(msg)
+
 # Type alias for multimodal query content (mirrors the Anthropic Messages API).
 # A plain str is treated as a single text block.  A list follows the Anthropic
 # content-block schema: {"type": "text", "text": "..."} or
@@ -2140,6 +2202,10 @@ class GraphExecutor:
                     last_response, node, ctx, parent_event_id=agent_event_id
                 )
                 messages = self._backend.extend_messages(messages, last_response, tool_results)
+                # Bound the re-read: once the history is long, shrink old turns in place
+                # every _HISTORY_COMPACT_EVERY iterations (batched so caching stays warm).
+                if _HISTORY_COMPACT_EVERY and iterations % _HISTORY_COMPACT_EVERY == 0:
+                    _compact_history(messages)
                 continue
 
             # Truncated at max_tokens with NOTHING actionable — the model's reasoning
