@@ -46,13 +46,140 @@ class LLMResponse:
     """Backend-agnostic response from one LLM turn."""
     text:       str
     tool_calls: list[ToolCall]
-    stop_reason: str           # "end_turn" | "tool_use" | "max_tokens"
+    # "end_turn" | "tool_use" | "max_tokens" | "unparsed_tool_call"
+    stop_reason: str
     # Chain-of-thought a reasoning model emitted in a side channel (OpenAI
     # `reasoning_content`, Anthropic `thinking` blocks) rather than in `text`.
     # Captured so the executor can (a) salvage it when `text` is empty and (b)
     # tell "the model truncated mid-thought" apart from "the model is done".
     reasoning:  str = ""
     _raw: Any = field(default=None, repr=False)  # backend raw object for message continuation
+
+
+# ---------------------------------------------------------------------------
+# Unparsed tool calls (local models)
+# ---------------------------------------------------------------------------
+# A local model sometimes emits a tool call as literal TEXT instead of through the
+# API's structured `tool_calls` field — the server's parser rejected its output (a
+# format it doesn't recognise, or a hybrid of two conventions). The turn then looks
+# like a plain final answer, so an agent loop ends mid-task believing the model was
+# finished. Detecting it lets the executor ask for a properly-formed call instead of
+# silently terminating.
+#
+# The markup lands in EITHER channel, so both must be inspected: a reasoning model
+# often returns an empty/whitespace `content` and puts everything — including the
+# tool call it meant to make — in `reasoning_content`. Checking only `content` misses
+# exactly the case that motivated this (bonsai-27b emitting a Hermes/Llama hybrid
+# into the reasoning channel, leaving `content` as "\n\n").
+#
+# Matching is deliberately conservative — an explicit opening tag from a known
+# convention. Prose that merely mentions tools must not trip it.
+import re as _re
+
+_UNPARSED_TOOL_CALL_MARKERS = _re.compile(
+    r"""(
+          <\s*tool_call\s*>          # Hermes / Qwen / many GGUF chat templates
+        | <\s*function\s*=           # Llama-3 / functionary: <function=name>
+        | <\s*function_call\s*>
+        | <\|\s*tool_call\s*\|>      # ChatML-style sentinel
+        | <\s*invoke\s+name\s*=      # Anthropic-XML imitation
+    )""",
+    _re.IGNORECASE | _re.VERBOSE,
+)
+
+
+def looks_like_unparsed_tool_call(*channels: "str | None") -> bool:
+    """Whether ANY response channel carries a tool-call block the API never parsed.
+
+    Pass every channel the model can write into (`content` and `reasoning_content`) —
+    the markup shows up in either, and a reasoning model routinely leaves `content`
+    blank. Only meaningful for a turn that returned NO structured tool calls while
+    tools were on offer — see the callers, which check both."""
+    return any(
+        _UNPARSED_TOOL_CALL_MARKERS.search(c) is not None
+        for c in channels if c
+    )
+
+
+# --- Recovering the call, not just detecting it ------------------------------
+# Re-prompting costs a turn and relies on the model complying (bonsai-27b often does
+# not). When the markup is present we can usually just READ it: the name and arguments
+# are right there. Two dialects cover what local models emit, plus the hybrid of both:
+#
+#   Hermes / Qwen:  <tool_call>{"name": "f", "arguments": {...}}</tool_call>
+#   Llama-3:        <function=f><parameter=k>v</parameter></function>
+#   hybrid:         <tool_call><function=f><parameter=k>\nv\n</parameter></function></tool_call>
+_FUNC_NAME_RE = _re.compile(r"<\s*function\s*=\s*([A-Za-z0-9_.\-]+)\s*>", _re.IGNORECASE)
+_PARAM_RE = _re.compile(
+    r"<\s*parameter\s*=\s*([A-Za-z0-9_.\-]+)\s*>(.*?)(?:<\s*/\s*parameter\s*>|(?=<\s*parameter\s*=)|\Z)",
+    _re.IGNORECASE | _re.DOTALL)
+_HERMES_BLOCK_RE = _re.compile(r"<\s*tool_call\s*>(.*?)(?:<\s*/\s*tool_call\s*>|\Z)",
+                               _re.IGNORECASE | _re.DOTALL)
+
+
+def parse_text_tool_calls(*channels: "str | None") -> list[ToolCall]:
+    """Recover structured ToolCalls from tool-call markup the API layer left as text.
+
+    Returns [] when nothing parseable is present — the caller then falls back to
+    re-prompting. Never raises: a half-written block is simply not a call."""
+    calls: list[ToolCall] = []
+    for chan in channels:
+        if not chan:
+            continue
+        # Hermes-style JSON bodies first — a hybrid block also matches here, but its
+        # body is not JSON, so it falls through to the Llama scan below.
+        for body in _HERMES_BLOCK_RE.findall(chan):
+            stripped = body.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                obj = json.loads(stripped)
+            except Exception:  # noqa: BLE001 — not JSON → try the other dialect
+                continue
+            name = obj.get("name") or obj.get("function")
+            args = obj.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:  # noqa: BLE001
+                    args = {}
+            if name:
+                calls.append(ToolCall(id=f"recovered_{len(calls)}", name=str(name),
+                                      input=args if isinstance(args, dict) else {}))
+        # Llama-3 / hybrid: <function=name> with <parameter=key>value</parameter>
+        for m in _FUNC_NAME_RE.finditer(chan):
+            name = m.group(1)
+            # Scan only up to the next function block so params aren't cross-assigned.
+            nxt = _FUNC_NAME_RE.search(chan, m.end())
+            segment = chan[m.end():nxt.start() if nxt else len(chan)]
+            args = {k: v.strip() for k, v in _PARAM_RE.findall(segment)}
+            if any(c.name == name and c.input == args for c in calls):
+                continue                     # already recovered from the JSON pass
+            calls.append(ToolCall(id=f"recovered_{len(calls)}", name=name, input=args))
+    return calls
+
+
+# --- Detecting arguments the SERVER mangled ---------------------------------
+# LM Studio sometimes half-parses an XML call into a real `tool_calls` entry whose
+# ARGUMENT KEYS are markup fragments, e.g. observed verbatim:
+#   {"actions\n</parameter": "<parameter=limit>\n5", "patterns\n</parameter": "..."}
+# The call then "succeeds" with every real argument lost — here it ran an unfiltered
+# query and the model silently got the wrong answer. A wrong answer is worse than a
+# failed call, so treat this as an unparsed call and ask for a clean one.
+_MANGLED_KEY_MARKERS = ("</parameter", "<parameter=", "</function", "<function=")
+
+
+def has_mangled_tool_args(tool_calls: "list[ToolCall]") -> bool:
+    """True when any call's argument KEYS carry tool-call markup — a server-side
+    mis-parse, not arguments the model meant to send."""
+    for call in tool_calls:
+        if not isinstance(call.input, dict):
+            continue
+        for key in call.input:
+            low = str(key).lower()
+            if any(marker in low for marker in _MANGLED_KEY_MARKERS):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +391,32 @@ class OpenAIBackend(LLMBackend):
                 stop_reason = "max_tokens"
             case _:
                 stop_reason = "end_turn"
+        # The server half-parsed an XML call into `tool_calls` whose ARGUMENT KEYS are
+        # markup fragments — every real argument lost. Running that is worse than
+        # failing it (the tool silently answers a different question), so drop the
+        # mangled calls and treat the turn as an unparsed call.
+        if tools and tool_calls and has_mangled_tool_args(tool_calls):
+            recovered = parse_text_tool_calls(text, reasoning)
+            tool_calls = recovered
+            stop_reason = "tool_use" if recovered else "unparsed_tool_call"
+
+        # The model wrote a tool call as text and the server didn't parse it into
+        # `tool_calls`. That is NOT the end of the turn. Prefer RECOVERING it — the
+        # name and arguments are right there, and re-prompting both costs a turn and
+        # relies on a model that often cannot comply. Only flag for a re-prompt when
+        # the markup is present but unparseable.
+        if (
+            stop_reason == "end_turn"
+            and not tool_calls
+            and tools
+            and looks_like_unparsed_tool_call(text, reasoning)
+        ):
+            recovered = parse_text_tool_calls(text, reasoning)
+            if recovered:
+                tool_calls = recovered
+                stop_reason = "tool_use"
+            else:
+                stop_reason = "unparsed_tool_call"
         return LLMResponse(
             text=text, tool_calls=tool_calls, stop_reason=stop_reason,
             reasoning=reasoning, _raw=msg,

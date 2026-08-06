@@ -35,6 +35,7 @@ __all__ = [
     "end_turn",
     "tool_use",
     "max_tokens_truncated",
+    "unparsed_tool_call",
 ]
 
 
@@ -51,6 +52,17 @@ def max_tokens_truncated(text: str = "", reasoning: str = "") -> LLMResponse:
     should give it more room, not treat the empty result as done.
     """
     return LLMResponse(text=text, tool_calls=[], stop_reason="max_tokens", reasoning=reasoning)
+
+
+def unparsed_tool_call(text: str) -> LLMResponse:
+    """Build a turn whose tool call was emitted as TEXT and never parsed.
+
+    Models the local-model failure mode where the server's tool-call parser doesn't
+    recognise the model's format and leaves the markup in `content`: the turn carries
+    no structured tool calls, so it looks final while having done no work. The executor
+    should ask for a well-formed call rather than accept the markup as the result.
+    """
+    return LLMResponse(text=text, tool_calls=[], stop_reason="unparsed_tool_call")
 
 
 def tool_use(tool_id: str, name: str, input: dict[str, Any]) -> LLMResponse:

@@ -90,6 +90,88 @@ _MAX_TOKEN_ESCALATIONS = int(os.environ.get("YGG_MAX_TOKEN_ESCALATIONS", "2"))
 _TOKEN_ESCALATION_FACTOR = int(os.environ.get("YGG_TOKEN_ESCALATION_FACTOR", "2"))
 _TOKEN_ESCALATION_CAP = int(os.environ.get("YGG_TOKEN_ESCALATION_CAP", "32000"))
 
+# A local model that writes a tool call as TEXT instead of through the tool API (the
+# server's parser didn't recognise its format) produces a turn that looks like a final
+# answer but did no work — an agent loop would end mid-task. Same treatment as a
+# max_tokens truncation: tell the model its call wasn't parsed and let it retry, rather
+# than accepting the markup as the result. Bounded, so a model that cannot produce a
+# well-formed call still terminates instead of looping to max_iterations.
+# Env-tunable; 0 disables the correction (the turn is then terminal, as before).
+_MAX_TOOL_CALL_CORRECTIONS = int(os.environ.get("YGG_MAX_TOOL_CALL_CORRECTIONS", "3"))
+# A final turn that is BLANK or reads as a narration lead-in ("Now let me resolve all
+# the field contexts:") is the model announcing its NEXT action, not finishing. With no
+# parseable tool call the loop accepted it as the answer and the agent stopped mid-task.
+# Measured on run df80a65a: four aggregator shards ended at 12/23/5/12 of a 100-turn
+# budget, their final text either "\n\n" or exactly such a lead-in — none had written
+# its output. Nudge once (bounded) rather than accept a non-answer as the result.
+# Env-tunable; 0 restores the old behaviour.
+_MAX_CONTINUATION_NUDGES = int(os.environ.get("YGG_MAX_CONTINUATION_NUDGES", "2"))
+# An agent whose work is DEFINED by artefacts it must leave behind has not finished
+# while they are absent, however confident its closing message sounds. A consumer
+# declares them on the node as `attributes["completion_paths"]` (paths, absolute or
+# relative to the process cwd); the executor treats a terminal turn with any of them
+# missing as not-done and asks for the work to be completed. Generic on purpose — the
+# engine only checks existence, it never interprets the contents.
+# Env-tunable; 0 disables the check.
+_MAX_COMPLETION_NUDGES = int(os.environ.get("YGG_MAX_COMPLETION_NUDGES", "2"))
+
+
+def missing_completion_paths(node: Any) -> list[str]:
+    """Declared `completion_paths` for `node` that do not exist yet."""
+    attrs = getattr(node, "attributes", None) or {}
+    declared = attrs.get("completion_paths") or []
+    if isinstance(declared, str):
+        declared = [declared]
+    if not isinstance(declared, (list, tuple)):
+        return []
+    from pathlib import Path as _Path
+    return [str(p) for p in declared if p and not _Path(str(p)).exists()]
+
+_CONTINUATION_NUDGE = (
+    "Your last message did not finish the task and issued no tool call — it read as an "
+    "announcement of what you were about to do. Continue now: either make the next tool "
+    "call, or, if the work is genuinely complete, state the final result explicitly."
+)
+# A lead-in announces an action and stops: trailing colon, or an opening like
+# "Now let me …" / "Next, I'll …" / "Let me …". Kept narrow so a real answer that
+# happens to end in a colon-led list is not mistaken for one (it would have content
+# after the colon).
+_NARRATION_LEAD_IN = re.compile(
+    r"""^\s*(
+          (now\s+)?let(\s+me|'s)\b
+        | next\s*[,:]
+        | (i|I)\s*(will|'ll)\b
+        | (first|then|finally)\s*[,:]
+    )""",
+    re.IGNORECASE | re.VERBOSE)
+
+
+def looks_like_narration_only(text: str, reasoning: str = "") -> bool:
+    """Whether a no-tool-call turn is an announcement rather than an answer.
+
+    True for blank/whitespace output, and for a short lead-in that ends on a colon
+    (the model was about to act). A substantive answer — anything of length that does
+    not end mid-announcement — is left alone."""
+    body = (text or "").strip()
+    if not body:
+        # Nothing in `content`. Only a nudge-worthy non-answer if the model was not
+        # simply thinking out loud to a real conclusion in the reasoning channel.
+        return not (reasoning or "").strip()
+    if len(body) > 400:
+        return False                      # substantive output, not a lead-in
+    if body.endswith(":") and _NARRATION_LEAD_IN.search(body):
+        return True
+    return False
+
+
+_TOOL_CALL_CORRECTION_PROMPT = (
+    "Your previous message contained a tool call written as plain text, so it was NOT "
+    "executed — nothing ran. Do not describe or hand-write tool calls in your message "
+    "content. Re-issue that single call using the tool-calling API, with the arguments "
+    "as a JSON object. If you meant to give a final answer instead, reply with the "
+    "answer and no tool-call markup."
+)
+
 # Bounded rolling history. In a long ReAct loop the message history only ever GROWS
 # (each turn appends the assistant message + its tool results), and every turn re-reads
 # ALL of it — so cost is O(turns × context). To bound the re-read, once the history is
@@ -984,6 +1066,85 @@ class ResumeReadiness:
 # ---------------------------------------------------------------------------
 # GraphExecutor — dispatches nodes and traverses the graph
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Schema-directed coercion of tool inputs
+# ---------------------------------------------------------------------------
+# Small local models routinely emit the RIGHT arguments in the WRONG JSON type —
+# most often an array serialised as a comma-separated string
+# (`{"actions": "show,hide"}` for `actions: {type: "array"}`), and scalars as
+# strings (`{"limit": "5"}`). Input validation runs before the tool is called, so
+# such a turn dies as `tool_input.actions must be an array` and the work is lost even
+# though the model's INTENT was unambiguous and the fix mechanical.
+#
+# Coerce only where the declared schema states the target type, and only from a
+# lossless textual form. Anything already the right type is untouched; nothing is
+# invented; an undeclared key is left exactly as sent (validation still judges it).
+_TRUE_TOKENS = frozenset({"true", "yes", "1", "on"})
+_FALSE_TOKENS = frozenset({"false", "no", "0", "off"})
+
+
+def _coerce_scalar(value: Any, target: str) -> Any:
+    """Best-effort scalar coercion; returns `value` unchanged when unsure."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    match target:
+        case "integer":
+            try:
+                return int(text)
+            except ValueError:
+                return value
+        case "number":
+            try:
+                return float(text)
+            except ValueError:
+                return value
+        case "boolean":
+            low = text.lower()
+            if low in _TRUE_TOKENS:
+                return True
+            if low in _FALSE_TOKENS:
+                return False
+            return value
+        case _:
+            return value
+
+
+def coerce_to_schema(payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Return `payload` with values nudged to the types its schema declares.
+
+    Handles the shapes a local model actually gets wrong: a comma-separated (or
+    single) string where an array is declared, and a stringified number/bool where a
+    scalar is declared. Returns the SAME object when nothing needed changing, so the
+    common path allocates nothing."""
+    props = (schema or {}).get("properties")
+    if not isinstance(props, dict) or not isinstance(payload, dict):
+        return payload
+    out: dict[str, Any] | None = None
+    for key, value in payload.items():
+        spec = props.get(key)
+        if not isinstance(spec, dict):
+            continue
+        declared = spec.get("type")
+        new = value
+        if declared == "array" and not isinstance(value, list):
+            if isinstance(value, str):
+                parts = [p.strip() for p in value.split(",")]
+                new = [p for p in parts if p]
+            elif value is not None:
+                new = [value]           # a lone scalar for a list-typed param
+            item_type = (spec.get("items") or {}).get("type")
+            if isinstance(new, list) and item_type in ("integer", "number", "boolean"):
+                new = [_coerce_scalar(v, item_type) for v in new]
+        elif declared in ("integer", "number", "boolean"):
+            new = _coerce_scalar(value, declared)
+        if new is not value:
+            if out is None:
+                out = dict(payload)
+            out[key] = new
+    return out if out is not None else payload
+
 
 class GraphExecutor:
     """Executes a query by traversing the agent graph.
@@ -2180,6 +2341,9 @@ class GraphExecutor:
         iterations = 0
         cur_max_tokens = node.max_tokens
         token_escalations = 0
+        tool_call_corrections = 0
+        continuation_nudges = 0
+        completion_nudges = 0
 
         for _iteration in range(node.max_iterations):
             iterations += 1
@@ -2208,6 +2372,28 @@ class GraphExecutor:
                     _compact_history(messages)
                 continue
 
+            # The model wrote a tool call as TEXT and the API layer never parsed it, so
+            # no tool ran — the turn only LOOKS final. Tell it the call wasn't executed
+            # and let it re-issue a well-formed one, instead of accepting raw markup as
+            # the agent's result (which ended steps mid-task on local models).
+            if (
+                last_response.stop_reason == "unparsed_tool_call"
+                and tool_call_corrections < _MAX_TOOL_CALL_CORRECTIONS
+            ):
+                tool_call_corrections += 1
+                messages = self._backend.extend_messages(messages, last_response, [])
+                messages.append({"role": "user", "content": _TOOL_CALL_CORRECTION_PROMPT})
+                self._emit(
+                    ctx, "retry", node.node_id, node.name or "",
+                    payload={
+                        "reason":     "unparsed_tool_call",
+                        "correction": tool_call_corrections,
+                        "text":       (last_response.text or "")[:400],
+                    },
+                    parent_event_id=agent_event_id,
+                )
+                continue
+
             # Truncated at max_tokens with NOTHING actionable — the model's reasoning
             # consumed the whole budget before it could answer or call a tool. Give it
             # more room and retry the SAME turn (bounded) instead of mistaking the empty
@@ -2230,6 +2416,47 @@ class GraphExecutor:
                     parent_event_id=agent_event_id,
                 )
                 continue
+
+            # A blank or announce-and-stop turn is not an answer — the model was
+            # about to act. Nudge it to continue (bounded) instead of accepting a
+            # non-answer as the agent's result and ending the step mid-task.
+            if (
+                continuation_nudges < _MAX_CONTINUATION_NUDGES
+                and looks_like_narration_only(last_response.text, last_response.reasoning)
+            ):
+                continuation_nudges += 1
+                messages = self._backend.extend_messages(messages, last_response, [])
+                messages.append({"role": "user", "content": _CONTINUATION_NUDGE})
+                self._emit(
+                    ctx, "retry", node.node_id, node.name or "",
+                    payload={
+                        "reason": "narration_only_turn",
+                        "nudge":  continuation_nudges,
+                        "text":   (last_response.text or "")[:200],
+                    },
+                    parent_event_id=agent_event_id,
+                )
+                continue
+
+            # The node declares artefacts that define "done" and some are missing, so
+            # the work is not finished no matter how the closing message reads. Say
+            # which ones and let it finish (bounded) rather than accepting the claim.
+            if completion_nudges < _MAX_COMPLETION_NUDGES:
+                _absent = missing_completion_paths(node)
+                if _absent:
+                    completion_nudges += 1
+                    messages = self._backend.extend_messages(messages, last_response, [])
+                    messages.append({"role": "user", "content": (
+                        "You have not finished: the file(s) this task must produce do not "
+                        "exist yet — " + ", ".join(_absent) + ". Write them now, then stop. "
+                        "Do not describe what you would write; write it.")})
+                    self._emit(
+                        ctx, "retry", node.node_id, node.name or "",
+                        payload={"reason": "missing_completion_paths",
+                                 "nudge": completion_nudges, "missing": _absent[:10]},
+                        parent_event_id=agent_event_id,
+                    )
+                    continue
 
             # Terminal turn: a natural end of turn, or a truncation we can no longer
             # grow out of. Fall back to the reasoning trace when the model produced
@@ -2460,7 +2687,19 @@ class GraphExecutor:
                 "Call executor.register_tool(ref, fn) before running."
             )
 
-        payload = input_data or (list(ctx.outputs.values())[-1] if ctx.outputs else {})
+        # `{}` is a VALID call: a tool whose parameters are all optional is invoked with
+        # no arguments. Testing truthiness treated that as "no input given" and fell
+        # back to the previous node's output, which then failed THIS tool's input schema
+        # ("tool_input must be an object" on a call the model made correctly). Only a
+        # genuinely absent input (None) may fall back to the upstream payload.
+        payload = (input_data if input_data is not None
+                   else (list(ctx.outputs.values())[-1] if ctx.outputs else {}))
+        # Nudge argument TYPES to what the tool declares before validating: a local
+        # model's comma-separated string for an array param is unambiguous, and losing
+        # the whole turn to `tool_input.x must be an array` throws away work it did
+        # correctly. Only schema-declared, lossless conversions — see coerce_to_schema.
+        if isinstance(payload, dict):
+            payload = coerce_to_schema(payload, node.input_schema)
         runtime_payload = dict(payload) if isinstance(payload, dict) else {"input": payload}
         await self._validate_node_schemas(node, input_payload=payload, ctx=ctx)
         idempotency_key = self._idempotency_key(node, payload)

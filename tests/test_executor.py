@@ -591,6 +591,71 @@ async def test_tool_schema_validation_via_inline_and_schema_node(store):
         await executor._execute_tool(tool, ctx, input_data={"count": "bad"})
 
 
+# ---------------------------------------------------------------------------
+# No-argument tool calls
+#
+# A tool whose parameters are all optional is legitimately called with `{}`. That
+# empty dict must NOT be confused with "no input supplied": falling back to the
+# previous node's output injected an unrelated payload, which then failed this
+# tool's own input schema — a hard failure on a call the model made correctly.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_empty_input_is_a_real_no_arg_call_not_a_fallback(store):
+    """`{}` reaches the tool as `{}` even when a previous node produced output."""
+    tool = ToolNode(
+        name="all_optional",
+        callable_ref="tools.all_optional",
+        description="every parameter optional",
+        input_schema={"type": "object", "properties": {"parent": {"type": "string"}}},
+    )
+    await store.upsert_node(tool)
+
+    fn = AsyncMock(return_value="ok")
+    executor = GraphExecutor(store)
+    executor.register_tool("tools.all_optional", fn)
+
+    ctx = ExecutionContext(query="x")
+    # An upstream node left a NON-object output behind — the shape that used to be
+    # substituted for `{}` and then rejected by the object schema above.
+    ctx.outputs["previous_node"] = ["not", "an", "object"]
+
+    result = await executor._execute_tool(tool, ctx, input_data={})
+    assert result == "ok"
+    fn.assert_awaited_once_with({})
+
+
+@pytest.mark.asyncio
+async def test_absent_input_still_falls_back_to_previous_output(store):
+    """None (no input given at all) keeps the documented upstream-payload fallback."""
+    tool = ToolNode(name="chained", callable_ref="tools.chained", description="chained")
+    await store.upsert_node(tool)
+
+    fn = AsyncMock(return_value="ok")
+    executor = GraphExecutor(store)
+    executor.register_tool("tools.chained", fn)
+
+    ctx = ExecutionContext(query="x")
+    ctx.outputs["previous_node"] = {"from": "upstream"}
+
+    assert await executor._execute_tool(tool, ctx, input_data=None) == "ok"
+    fn.assert_awaited_once_with({"from": "upstream"})
+
+
+@pytest.mark.asyncio
+async def test_empty_input_with_no_upstream_output(store):
+    tool = ToolNode(name="lonely", callable_ref="tools.lonely", description="lonely")
+    await store.upsert_node(tool)
+
+    fn = AsyncMock(return_value="ok")
+    executor = GraphExecutor(store)
+    executor.register_tool("tools.lonely", fn)
+
+    assert await executor._execute_tool(
+        tool, ExecutionContext(query="x"), input_data={}) == "ok"
+    fn.assert_awaited_once_with({})
+
+
 @pytest.mark.asyncio
 async def test_event_hook_fires(store):
     agent = AgentNode(name="Hooked", routing_table={"default": "__END__"})
@@ -974,3 +1039,107 @@ async def test_checkpoint_without_offload_is_unchanged(store):
     assert "$ygg_blob" not in checkpoint.content
     restored = await executor.load_checkpoint(checkpoint.node_id)
     assert restored.outputs["node"] == {"form": "F" * 3000}
+
+
+# ---------------------------------------------------------------------------
+# Schema-directed coercion of tool inputs
+#
+# Small local models emit the right arguments in the wrong JSON type — most often an
+# array serialised as a comma-separated string. Validation runs before the tool is
+# called, so `{"tags": "new,sale"}` for `tags: {type: array}` died as
+# `tool_input.tags must be an array` and the turn's work was lost, even though the
+# intent was unambiguous. Observed verbatim from prism-ml/bonsai-27b:
+#   {"tags": "new,sale,featured", "keywords": "A, B, C", "regions": "eu",
+#    "limit": 5, "format": "text"}
+# ---------------------------------------------------------------------------
+
+from yggdrasil_lm.core.executor import coerce_to_schema  # noqa: E402
+
+_EXAMPLES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "regions": {"type": "array", "items": {"type": "string"}},
+        "limit": {"type": "integer"},
+        "format": {"type": "string"},
+    },
+}
+
+
+def test_comma_separated_string_becomes_an_array():
+    got = coerce_to_schema(
+        {"tags": "new,sale,featured", "keywords": "A, B, C",
+         "regions": "eu", "limit": 5, "format": "text"},
+        _EXAMPLES_SCHEMA)
+    assert got["tags"] == ["new", "sale", "featured"]
+    assert got["keywords"] == ["A", "B", "C"]      # surrounding spaces trimmed
+    assert got["regions"] == ["eu"]               # a single value is a 1-element list
+    assert got["limit"] == 5                       # already correct → untouched
+    assert got["format"] == "text"              # string param stays a string
+
+
+def test_already_correct_payload_is_returned_unchanged():
+    payload = {"tags": ["new"], "limit": 5}
+    assert coerce_to_schema(payload, _EXAMPLES_SCHEMA) is payload
+
+
+def test_stringified_scalars_are_coerced():
+    schema = {"type": "object", "properties": {
+        "limit": {"type": "integer"}, "ratio": {"type": "number"},
+        "dry_run": {"type": "boolean"}}}
+    got = coerce_to_schema({"limit": "5", "ratio": "0.25", "dry_run": "true"}, schema)
+    assert got == {"limit": 5, "ratio": 0.25, "dry_run": True}
+
+
+def test_typed_array_items_are_coerced_too():
+    schema = {"type": "object", "properties": {
+        "ids": {"type": "array", "items": {"type": "integer"}}}}
+    assert coerce_to_schema({"ids": "1,2,3"}, schema)["ids"] == [1, 2, 3]
+
+
+def test_unparseable_values_are_left_alone_for_validation_to_judge():
+    schema = {"type": "object", "properties": {
+        "limit": {"type": "integer"}, "flag": {"type": "boolean"}}}
+    got = coerce_to_schema({"limit": "many", "flag": "perhaps"}, schema)
+    assert got == {"limit": "many", "flag": "perhaps"}
+
+
+def test_undeclared_keys_and_absent_schema_are_untouched():
+    assert coerce_to_schema({"mystery": "a,b"}, _EXAMPLES_SCHEMA)["mystery"] == "a,b"
+    payload = {"tags": "a,b"}
+    assert coerce_to_schema(payload, {}) is payload
+    assert coerce_to_schema(payload, {"type": "object"}) is payload
+
+
+def test_nothing_is_invented_for_missing_keys():
+    got = coerce_to_schema({"limit": "5"}, _EXAMPLES_SCHEMA)
+    assert set(got) == {"limit"}
+
+
+def test_empty_string_for_an_array_becomes_an_empty_list():
+    assert coerce_to_schema({"tags": ""}, _EXAMPLES_SCHEMA)["tags"] == []
+
+
+@pytest.mark.asyncio
+async def test_tool_call_with_a_stringified_array_now_reaches_the_tool(store):
+    """End to end: the exact failing payload must no longer fail validation."""
+    tool = ToolNode(
+        name="search_examples",
+        callable_ref="tools.examples",
+        description="examples",
+        input_schema=_EXAMPLES_SCHEMA,
+    )
+    await store.upsert_node(tool)
+    fn = AsyncMock(return_value="ok")
+    executor = GraphExecutor(store)
+    executor.register_tool("tools.examples", fn)
+
+    result = await executor._execute_tool(
+        tool, ExecutionContext(query="x"),
+        input_data={"tags": "new,sale,featured", "regions": "eu", "limit": 5})
+
+    assert result == "ok"
+    # the TOOL receives real lists, not the raw strings
+    fn.assert_awaited_once_with(
+        {"tags": ["new", "sale", "featured"], "regions": ["eu"], "limit": 5})
