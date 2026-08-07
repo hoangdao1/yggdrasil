@@ -90,6 +90,36 @@ _MAX_TOKEN_ESCALATIONS = int(os.environ.get("YGG_MAX_TOKEN_ESCALATIONS", "2"))
 _TOKEN_ESCALATION_FACTOR = int(os.environ.get("YGG_TOKEN_ESCALATION_FACTOR", "2"))
 _TOKEN_ESCALATION_CAP = int(os.environ.get("YGG_TOKEN_ESCALATION_CAP", "32000"))
 
+
+def _escalation_knobs() -> tuple[int, int, int]:
+    """(max escalations, factor, cap) read at USE time, not import time.
+
+    These constants used to be baked in when the module was first imported, which
+    silently ignored any caller that set the environment later — and a host app
+    naturally does exactly that, because the right cap depends on the model it just
+    picked. A server that imports the engine at startup and then sets
+    YGG_TOKEN_ESCALATION_CAP=13200 per run kept escalating to the 32000 default: it
+    asked a 22000-token-context model for 32000 output tokens, which cannot ever
+    return, so the turn truncated, escalated, and truncated again — ~22 minutes per
+    doomed attempt with no way for the host to intervene.
+
+    The module constants remain as the documented defaults (and so a test may still
+    patch them); a live environment variable wins over them.
+    """
+    def _knob(env: str, default: int) -> int:
+        raw = os.environ.get(env)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:                       # a malformed knob must not kill the run
+            return default
+    return (
+        _knob("YGG_MAX_TOKEN_ESCALATIONS", _MAX_TOKEN_ESCALATIONS),
+        _knob("YGG_TOKEN_ESCALATION_FACTOR", _TOKEN_ESCALATION_FACTOR),
+        _knob("YGG_TOKEN_ESCALATION_CAP", _TOKEN_ESCALATION_CAP),
+    )
+
 # A local model that writes a tool call as TEXT instead of through the tool API (the
 # server's parser didn't recognise its format) produces a turn that looks like a final
 # answer but did no work — an agent loop would end mid-task. Same treatment as a
@@ -2398,14 +2428,15 @@ class GraphExecutor:
             # consumed the whole budget before it could answer or call a tool. Give it
             # more room and retry the SAME turn (bounded) instead of mistaking the empty
             # result for completion (the root cause of an agent silently doing nothing).
+            _max_esc, _factor, _cap = _escalation_knobs()
             if (
                 last_response.stop_reason == "max_tokens"
-                and token_escalations < _MAX_TOKEN_ESCALATIONS
-                and _TOKEN_ESCALATION_FACTOR > 1
-                and cur_max_tokens < _TOKEN_ESCALATION_CAP
+                and token_escalations < _max_esc
+                and _factor > 1
+                and cur_max_tokens < _cap
             ):
                 token_escalations += 1
-                cur_max_tokens = min(cur_max_tokens * _TOKEN_ESCALATION_FACTOR, _TOKEN_ESCALATION_CAP)
+                cur_max_tokens = min(cur_max_tokens * _factor, _cap)
                 self._emit(
                     ctx, "retry", node.node_id, node.name or "",
                     payload={
@@ -2624,7 +2655,27 @@ class GraphExecutor:
 
             t0 = time.monotonic()
             if tool_node is None:
-                content = f"Tool {tc.name!r} not found."
+                # Name what IS on the belt. "Tool 'read_file' not found." is a dead end:
+                # the model has no way to learn the belt from the error, so it re-tries
+                # the same absent tool or gives up, burning turns either way. A leashed
+                # worker with only {read_input, write_file} routinely reaches for
+                # read_file and lost whole turns to this. Listing the alternatives lets
+                # it self-correct on the next turn, which is the difference between a
+                # wasted turn and a recovered one. Sorted for determinism.
+                #
+                # Deliberately NO "did you mean X?" guess: a purely lexical match is
+                # blind to intent and steers confidently wrong. difflib scores
+                # read_file→write_file above read_file→read_input (they share the
+                # longer `_file`), so a worker trying to READ would be pointed at the
+                # writer. Listing the belt lets the model pick using the intent only it
+                # has; a wrong single suggestion overrides that judgement.
+                _available = sorted(tool_map)
+                if _available:
+                    content = (f"Tool {tc.name!r} not found. "
+                               f"Available tools: {', '.join(_available)}.")
+                else:
+                    content = (f"Tool {tc.name!r} not found. This node has no tools — "
+                               "answer directly instead of calling a tool.")
                 success = False
             else:
                 try:

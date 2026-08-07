@@ -1143,3 +1143,111 @@ async def test_tool_call_with_a_stringified_array_now_reaches_the_tool(store):
     # the TOOL receives real lists, not the raw strings
     fn.assert_awaited_once_with(
         {"tags": ["new", "sale", "featured"], "regions": ["eu"], "limit": 5})
+
+
+# ---------------------------------------------------------------------------
+# An unknown tool must tell the model what IS available
+#
+# "Tool 'read_file' not found." is a dead end: nothing in the error names the belt,
+# so the model re-tries the same absent tool or gives up — either way the turn is
+# spent. Observed repeatedly on leashed LM Studio workers whose belt is only
+# {read_input, write_file}: they reach for read_file, get the bare message, and
+# burn a turn. Naming the alternatives (and the near-match) makes it recoverable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_error_lists_available_tools(store):
+    tool = ToolNode(
+        name="read_input",
+        callable_ref="tools.read_input",
+        description="read an input slice",
+        input_schema={"type": "object", "properties": {}},
+    )
+    other = ToolNode(
+        name="write_file",
+        callable_ref="tools.write_file",
+        description="write a file",
+        input_schema={"type": "object", "properties": {}},
+    )
+    agent = AgentNode(name="A", description="agent", routing_table={"default": "__END__"})
+    for n in (tool, other, agent):
+        await store.upsert_node(n)
+    await store.upsert_edge(Edge.has_tool(agent.node_id, tool.node_id))
+    await store.upsert_edge(Edge.has_tool(agent.node_id, other.node_id))
+
+    executor = GraphExecutor(store, backend=StubBackend([
+        _tool_use("tu_1", "read_file", {"path": "work/graph.json"}),
+        _end_turn("recovered"),
+    ]))
+
+    ctx = ExecutionContext(query="go")
+    results = await executor._handle_tool_calls(
+        _tool_use("tu_1", "read_file", {"path": "work/graph.json"}), agent, ctx)
+
+    assert len(results) == 1
+    msg = results[0].content
+    assert "not found" in msg
+    assert "read_input" in msg and "write_file" in msg, (
+        f"the belt must be named so the model can self-correct; got: {msg!r}")
+    # No single "did you mean" guess: lexically, read_file is CLOSER to write_file
+    # than to read_input, so a guess would point a reader at the writer. The belt
+    # listing lets the model choose using intent difflib cannot see.
+    assert "Did you mean" not in msg, (
+        f"a lexical guess steers confidently wrong here; got: {msg!r}")
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_on_a_toolless_node_says_answer_directly(store):
+    agent = AgentNode(name="A", description="agent", routing_table={"default": "__END__"})
+    await store.upsert_node(agent)
+
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("x")]))
+    ctx = ExecutionContext(query="go")
+    results = await executor._handle_tool_calls(
+        _tool_use("tu_1", "read_file", {}), agent, ctx)
+
+    assert "not found" in results[0].content
+    assert "no tools" in results[0].content
+    assert "Available tools:" not in results[0].content, \
+        "must not advertise an empty belt"
+
+
+# ---------------------------------------------------------------------------
+# Escalation knobs must be read at USE time, not baked in at import
+#
+# A host app picks its cap from the model it just loaded, so it necessarily sets the
+# env AFTER importing the engine. Reading the knob at import time silently ignored
+# that: a server that set YGG_TOKEN_ESCALATION_CAP=13200 per run kept escalating to
+# the 32000 default and asked a 22000-token-context model for 32000 output tokens —
+# impossible to return, so every attempt truncated and escalated again (~22 min each).
+# ---------------------------------------------------------------------------
+
+
+def test_escalation_cap_set_after_import_is_honoured(monkeypatch):
+    from yggdrasil_lm.core import executor as _ex
+
+    monkeypatch.setenv("YGG_TOKEN_ESCALATION_CAP", "13200")
+    monkeypatch.setenv("YGG_MAX_TOKEN_ESCALATIONS", "5")
+    monkeypatch.setenv("YGG_TOKEN_ESCALATION_FACTOR", "3")
+    max_esc, factor, cap = _ex._escalation_knobs()
+    assert (max_esc, factor, cap) == (5, 3, 13200), \
+        "a knob set after import must win over the import-time default"
+
+
+def test_escalation_knobs_fall_back_to_module_defaults(monkeypatch):
+    from yggdrasil_lm.core import executor as _ex
+
+    for env in ("YGG_TOKEN_ESCALATION_CAP", "YGG_MAX_TOKEN_ESCALATIONS",
+                "YGG_TOKEN_ESCALATION_FACTOR"):
+        monkeypatch.delenv(env, raising=False)
+    max_esc, factor, cap = _ex._escalation_knobs()
+    assert (max_esc, factor, cap) == (
+        _ex._MAX_TOKEN_ESCALATIONS, _ex._TOKEN_ESCALATION_FACTOR, _ex._TOKEN_ESCALATION_CAP)
+
+
+def test_malformed_escalation_knob_does_not_kill_the_run(monkeypatch):
+    from yggdrasil_lm.core import executor as _ex
+
+    monkeypatch.setenv("YGG_TOKEN_ESCALATION_CAP", "not-a-number")
+    assert _ex._escalation_knobs()[2] == _ex._TOKEN_ESCALATION_CAP
