@@ -1251,3 +1251,54 @@ def test_malformed_escalation_knob_does_not_kill_the_run(monkeypatch):
 
     monkeypatch.setenv("YGG_TOKEN_ESCALATION_CAP", "not-a-number")
     assert _ex._escalation_knobs()[2] == _ex._TOKEN_ESCALATION_CAP
+
+
+# ---------------------------------------------------------------------------
+# Pre-satisfied completion_paths skip the agent (0.1.18)
+#
+# On resume, a fan-out re-executes every agent node; each "already done"
+# discovery costs a full LLM turn (~8 min on an always-thinking local model) or
+# a whole re-invocation on a per-call-priced executor. The symmetric complement
+# of the missing-completion-paths re-prompt: existence only, contents never
+# interpreted, env kill-switch restores the old behaviour.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_with_satisfied_completion_paths_is_skipped(store, tmp_path, monkeypatch):
+    monkeypatch.delenv("YGG_SKIP_COMPLETED_AGENTS", raising=False)
+    out = tmp_path / "done.json"
+    out.write_text("[]")
+    agent = AgentNode(name="step_x", description="x", model="m", max_iterations=3,
+                      attributes={"completion_paths": [str(out)]})
+    await store.upsert_node(agent)
+
+    # an empty StubBackend raises if any turn is attempted — the skip must
+    # short-circuit before the first LLM call
+    executor = GraphExecutor(store, backend=StubBackend([]))
+
+    result = await executor._execute_agent(agent, ExecutionContext(query="go"))
+    assert result.get("skipped") is True
+    assert result["intent"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_agent_with_missing_completion_paths_still_runs(store, tmp_path):
+    agent = AgentNode(name="step_x", description="x", model="m", max_iterations=3,
+                      attributes={"completion_paths": [str(tmp_path / "absent.json")]})
+    await store.upsert_node(agent)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("ran")]))
+    result = await executor._execute_agent(agent, ExecutionContext(query="go"))
+    assert result["text"] == "ran"
+
+
+@pytest.mark.asyncio
+async def test_skip_kill_switch(store, tmp_path, monkeypatch):
+    monkeypatch.setenv("YGG_SKIP_COMPLETED_AGENTS", "0")
+    out = tmp_path / "done.json"; out.write_text("[]")
+    agent = AgentNode(name="step_x", description="x", model="m", max_iterations=3,
+                      attributes={"completion_paths": [str(out)]})
+    await store.upsert_node(agent)
+    executor = GraphExecutor(store, backend=StubBackend([_end_turn("ran anyway")]))
+    result = await executor._execute_agent(agent, ExecutionContext(query="go"))
+    assert result["text"] == "ran anyway"

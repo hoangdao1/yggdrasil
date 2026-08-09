@@ -2292,6 +2292,25 @@ class GraphExecutor:
                 waiting_for=node.wait_for_input,
             )
             return {"text": "", "intent": "default", "status": "paused"}
+        # Pre-satisfied completion_paths → the node's work already exists; skip the
+        # agent entirely. The symmetric complement of the not-done check below (a
+        # terminal turn with a declared path MISSING is re-prompted): on resume, a
+        # fan-out re-executes every agent node, and each "already done" discovery
+        # costs a full LLM turn — ~8 minutes per no-op on an always-thinking local
+        # model, or a whole re-invocation on a per-call-priced executor. Same
+        # contract as the not-done side: existence only, contents never
+        # interpreted. Env kill-switch restores the previous behaviour.
+        _declared = (getattr(node, "attributes", None) or {}).get("completion_paths") or []
+        if (_declared and not missing_completion_paths(node)
+                and os.environ.get("YGG_SKIP_COMPLETED_AGENTS", "1") != "0"):
+            self._emit(
+                ctx, "agent_skip", node.node_id, node.name or "",
+                payload={"reason": "completion_paths_already_satisfied",
+                         "paths": list(_declared)},
+                parent_event_id=parent_event_id,
+            )
+            return {"text": "already complete: every declared completion path exists",
+                    "intent": "complete", "skipped": True}
         t0 = time.monotonic()
         composed  = await self.composer.compose(node, query=_query_text(ctx.query), session_id=ctx.session_id)
         system    = composed.build_system_prompt()
