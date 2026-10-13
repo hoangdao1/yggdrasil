@@ -22,6 +22,7 @@ from yggdrasil_lm.backends.claude_code import (
     _AgentRunResult,
     _build_mcp_server,
     _json_type_to_python,
+    _sdk_tool_schema,
 )
 
 
@@ -132,10 +133,12 @@ def test_build_mcp_server_creates_server_when_tool_registered(tool_node):
         server = _build_mcp_server(composed, {tool_node.callable_ref: fake_echo})
 
     assert server is fake_server
+    # The full JSON schema is forwarded, so `required` survives (the SDK's
+    # {name: type} shorthand would mark every property required).
     mock_tool.assert_called_once_with(
         tool_node.name,
         tool_node.description,
-        {"message": str},
+        tool_node.input_schema,
     )
     mock_create.assert_called_once_with("yggdrasil-tools", tools=[fake_decorated])
 
@@ -410,3 +413,34 @@ async def test_execute_agent_honors_pause_before(store):
     assert pause is not None
     assert pause.reason == "pause_before"
     assert pause.waiting_for == "Approve to continue."
+
+
+# ---------------------------------------------------------------------------
+# Tool schemas: optional arguments stay optional
+# ---------------------------------------------------------------------------
+
+def test_build_mcp_server_keeps_optional_args_optional():
+    """A tool whose schema lists only some properties as required must not be
+    advertised as requiring them all."""
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+        "required": ["path"],
+    }
+    tn = ToolNode(name="t", description="d", callable_ref="r", input_schema=schema)
+    with (
+        patch("yggdrasil_lm.backends.claude_code._SDK_AVAILABLE", True),
+        patch("yggdrasil_lm.backends.claude_code.cc_tool", autospec=False) as mock_tool,
+        patch("yggdrasil_lm.backends.claude_code.create_sdk_mcp_server", return_value=MagicMock()),
+    ):
+        mock_tool.return_value = lambda fn: MagicMock()
+        _build_mcp_server(_FakeComposed(tools=[tn]), {"r": AsyncMock()})
+    advertised = mock_tool.call_args.args[2]
+    assert advertised["required"] == ["path"]
+
+
+def test_sdk_tool_schema_shorthand_without_type():
+    assert _sdk_tool_schema({"properties": {"x": {"type": "number"}}}) == {"x": float}
+    assert _sdk_tool_schema(None) == {"input": str}
+
+

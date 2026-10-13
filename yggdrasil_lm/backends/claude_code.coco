@@ -197,6 +197,32 @@ def _split_tokens(usage: dict[str, Any] | None) -> tuple[int, int]:
     return tokens_in, tokens_out
 
 
+def _sdk_tool_schema(input_schema: dict[str, Any] | None) -> dict[str, Any]:
+    """The schema handed to the Agent SDK's ``tool()`` for one ToolNode.
+
+    A full JSON schema (an object ``type`` plus ``properties``) is passed as-is, so
+    its ``required`` list survives. The SDK's ``{name: python_type}`` shorthand marks
+    EVERY property required, which made a tool's optional arguments mandatory and got
+    a call that left one out refused before the tool ran. Anything else falls back to
+    the shorthand, and a tool with no properties takes a single ``input`` string.
+
+    >>> _sdk_tool_schema({"type": "object", "properties": {"a": {"type": "string"}}, "required": []})
+    {'type': 'object', 'properties': {'a': {'type': 'string'}}, 'required': []}
+    >>> _sdk_tool_schema({"properties": {"n": {"type": "integer"}}})
+    {'n': <class 'int'>}
+    >>> _sdk_tool_schema({})
+    {'input': <class 'str'>}
+    """
+    schema = input_schema or {}
+    if isinstance(schema.get("type"), str) and isinstance(schema.get("properties"), dict):
+        return schema
+    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    return {
+        k: _json_type_to_python(v.get("type", "string"))
+        for k, v in props.items()
+    } or {"input": str}
+
+
 def _build_mcp_server(
     composed: Any,
     tool_fns: dict,
@@ -222,14 +248,7 @@ def _build_mcp_server(
         if fn is None:
             continue
 
-        props = tn.input_schema.get("properties", {})
-        param_types = {
-            k: _json_type_to_python(v.get("type", "string"))
-            for k, v in props.items()
-        }
-        # Fallback for tools that declare no properties
-        if not param_types:
-            param_types = {"input": str}
+        param_types = _sdk_tool_schema(tn.input_schema)
 
         is_async = tn.is_async
 
