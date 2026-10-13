@@ -565,3 +565,35 @@ async def test_execute_agent_passes_session_kwargs(store, agent):
         await ex.run(agent.node_id, "hi")
     assert captured["setting_sources"] == []
     assert captured["strict_mcp_config"] is True
+
+
+# ---------------------------------------------------------------------------
+# agent_end carries the whole closing message
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_end_carries_the_full_closing_message(store, agent):
+    """`text_summary` stays a 120-character preview; `full_response` is the whole text,
+    and the module flag says so for callers that feature-detect it."""
+    from yggdrasil_lm.backends import claude_code
+    await store.upsert_node(agent)
+    closing = "summary line " * 40          # well past the 120-character preview
+
+    with (
+        patch("yggdrasil_lm.backends.claude_code._SDK_AVAILABLE", True),
+        patch("yggdrasil_lm.backends.claude_code._build_mcp_server", return_value=None),
+        patch("yggdrasil_lm.backends.claude_code.ClaudeAgentOptions", MagicMock()),
+        patch(
+            "yggdrasil_lm.backends.claude_code.ClaudeCodeExecutor._run_with_query",
+            new_callable=AsyncMock,
+            return_value=_AgentRunResult(text=closing, tool_calls=0, cost_usd=None),
+        ),
+    ):
+        ex = ClaudeCodeExecutor(store)
+        ctx = await ex.run(agent.node_id, "start")
+
+    ends = [e for e in ctx.trace if e.event_type == "agent_end"]
+    assert len(ends) == 1
+    assert ends[0].payload["full_response"] == closing
+    assert ends[0].payload["text_summary"] == closing[:120]
+    assert claude_code.AGENT_END_FULL_RESPONSE is True
