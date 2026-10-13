@@ -3010,6 +3010,11 @@ ClaudeCodeExecutor(
     max_budget_usd:     float | None = None,
     cwd:                str | None = None,
     cli_path:           str | None = None,
+    env:                dict[str, str] | None = None,
+    honor_max_tokens:   bool = False,
+    **session_options,  # tools, disallowed_tools, setting_sources, strict_mcp_config,
+                        # skills, agents, plugins, add_dirs, effort, thinking,
+                        # max_thinking_tokens, fallback_model
 )
 ```
 
@@ -3026,6 +3031,13 @@ ClaudeCodeExecutor(
 | `max_budget_usd` | `float \| None` | `None` | Optional per-invocation USD cost cap. |
 | `cwd` | `str \| None` | `None` | Working directory for file operations. |
 | `cli_path` | `str \| None` | `None` | Optional path to the system `claude` CLI. Useful when sub-agents should authenticate through the local Claude Code account instead of an API key. |
+| `env` | `dict \| None` | `None` | Extra environment for every sub-agent. `ANTHROPIC_API_KEY` is always forced to `""` (account auth). |
+| `honor_max_tokens` | `bool` | `False` | Pass each node's `max_tokens` as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. |
+| `**session_options` | | unset | Any name in `SESSION_OPTION_NAMES`, passed to `ClaudeAgentOptions` only when set and only if the installed SDK has the field. Isolate a session with `setting_sources=[]` (no user/project settings, CLAUDE.md or memory), `skills=[]`, `strict_mcp_config=True`, an explicit `tools=[...]` (what the model sees; `allowed_tools` only pre-approves) and `disallowed_tools=["Agent", "Task"]` (no in-session fan-out). An unknown name raises `TypeError`. |
+
+**Per-node overrides.** `AgentNode.attributes["claude_code"]` takes the same keys plus `env` (merged over the executor's) and `max_output_tokens`; a key set there replaces the executor's value for that node's session. `max_turns` is `node.max_iterations` and `model` is `node.model`, as before.
+
+Tool schemas: a `ToolNode.input_schema` that is a full JSON schema (an object `type` plus `properties`) is forwarded to the SDK as-is, so optional arguments stay optional.
 
 **Methods:**
 

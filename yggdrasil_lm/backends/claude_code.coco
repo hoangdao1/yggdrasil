@@ -223,6 +223,40 @@ def _sdk_tool_schema(input_schema: dict[str, Any] | None) -> dict[str, Any]:
     } or {"input": str}
 
 
+# Options a caller may set to shape a session beyond the defaults. Each is passed to
+# ClaudeAgentOptions only when set (None means "leave the SDK's default"), and only
+# when the installed SDK has the field — an older SDK is not handed a keyword it
+# would refuse.
+SESSION_OPTION_NAMES: tuple[str, ...] = (
+    "tools",               # built-in tools the model SEES (allowed_tools only pre-approves)
+    "disallowed_tools",    # e.g. ["Agent", "Task"] to stop in-session fan-out
+    "setting_sources",     # [] = load no user/project/local settings, CLAUDE.md or memory
+    "strict_mcp_config",   # True = only the MCP servers passed here, none from config
+    "skills",              # [] = no skills listing
+    "agents",              # programmatic sub-agent definitions
+    "plugins",
+    "add_dirs",
+    "effort",
+    "thinking",
+    "max_thinking_tokens",
+    "fallback_model",
+)
+
+# The per-node override lives here: ``node.attributes["claude_code"] = {...}``. Keys are
+# SESSION_OPTION_NAMES plus ``env`` (merged over the executor's) and
+# ``max_output_tokens``. A key set on the node replaces the executor's value.
+NODE_OPTIONS_ATTRIBUTE = "claude_code"
+
+
+def _sdk_option_fields() -> set[str] | None:
+    """The field names the installed ClaudeAgentOptions accepts; None when unknown."""
+    import dataclasses
+    try:
+        return {f.name for f in dataclasses.fields(ClaudeAgentOptions)}
+    except TypeError:
+        return None
+
+
 def _build_mcp_server(
     composed: Any,
     tool_fns: dict,
@@ -321,6 +355,15 @@ class ClaudeCodeExecutor(GraphExecutor):
                            point at your system-installed ``claude`` so sub-agents
                            authenticate via your Claude Code account rather than
                            ANTHROPIC_API_KEY.
+        env:               Extra environment for every sub-agent, merged under the
+                           forced ``ANTHROPIC_API_KEY=""`` (account auth).
+        honor_max_tokens:  Pass each node's ``max_tokens`` to Claude Code as
+                           ``CLAUDE_CODE_MAX_OUTPUT_TOKENS``. Off by default: Claude
+                           Code otherwise ignores the node's budget.
+        **session_options: Any of SESSION_OPTION_NAMES, e.g. ``setting_sources=[]``,
+                           ``tools=[...]``, ``strict_mcp_config=True``, ``skills=[]``,
+                           ``disallowed_tools=["Agent", "Task"]``, ``effort="low"``.
+                           A node overrides them with ``attributes["claude_code"]``.
     """
 
     def __init__(
@@ -334,6 +377,9 @@ class ClaudeCodeExecutor(GraphExecutor):
         max_budget_usd:     float | None = None,
         cwd:                str | None = None,
         cli_path:           str | None = None,
+        env:                dict[str, str] | None = None,
+        honor_max_tokens:   bool = False,
+        **session_options:  Any,
     ) -> None:
         super().__init__(
             store,
@@ -350,6 +396,12 @@ class ClaudeCodeExecutor(GraphExecutor):
         self._max_budget_usd  = max_budget_usd
         self._cwd             = cwd
         self._cli_path        = cli_path
+        self._env             = dict(env or {})
+        self._honor_max_tokens = honor_max_tokens
+        unknown = set(session_options) - set(SESSION_OPTION_NAMES)
+        if unknown:
+            raise TypeError(f"unknown Claude Code session option(s): {sorted(unknown)}")
+        self._session_options = {k: v for k, v in session_options.items() if v is not None}
 
     # ------------------------------------------------------------------
     # Override: LLM routing (lazily init backend — not used for execution)
@@ -528,18 +580,7 @@ class ClaudeCodeExecutor(GraphExecutor):
         if tool_mcp:
             mcp_servers["yggdrasil-tools"] = tool_mcp
 
-        options = ClaudeAgentOptions(
-            system_prompt=system,
-            allowed_tools=self._allowed_tools,
-            mcp_servers=mcp_servers or None,
-            max_turns=node.max_iterations,
-            model=node.model,
-            permission_mode=self._permission_mode,
-            cwd=self._cwd,
-            env={"ANTHROPIC_API_KEY": ""},
-            **({"max_budget_usd": self._max_budget_usd} if self._max_budget_usd else {}),
-            **({"cli_path": self._cli_path} if self._cli_path else {}),
-        )
+        options = ClaudeAgentOptions(**self._session_kwargs(node, system, mcp_servers))
 
         try:
             run_result: _AgentRunResult = await (
@@ -615,6 +656,49 @@ class ClaudeCodeExecutor(GraphExecutor):
         )
 
         return {"text": run_result.text, "intent": intent}
+
+    def _session_kwargs(self, node: AgentNode, system: str, mcp_servers: dict) -> dict[str, Any]:
+        """The ClaudeAgentOptions keywords for one node's session.
+
+        The executor's session options, overridden key by key by the node's
+        ``attributes["claude_code"]``; ``env`` merges instead (node over executor),
+        and ``ANTHROPIC_API_KEY`` is always blanked so the CLI uses account auth.
+        """
+        node_opts = dict((node.attributes or {}).get(NODE_OPTIONS_ATTRIBUTE) or {})
+        unknown = set(node_opts) - set(SESSION_OPTION_NAMES) - {"env", "max_output_tokens"}
+        if unknown:
+            raise ValueError(
+                f"node {node.name or node.node_id!r}: unknown {NODE_OPTIONS_ATTRIBUTE} "
+                f"option(s) {sorted(unknown)}"
+            )
+        env: dict[str, str] = {**self._env, **{str(k): str(v) for k, v in (node_opts.pop("env", None) or {}).items()}}
+        max_out = node_opts.pop("max_output_tokens", None)
+        if max_out is None and self._honor_max_tokens:
+            max_out = node.max_tokens
+        if max_out:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(int(max_out))
+        env["ANTHROPIC_API_KEY"] = ""
+
+        kwargs: dict[str, Any] = {
+            "system_prompt": system,
+            "allowed_tools": self._allowed_tools,
+            "mcp_servers": mcp_servers or None,
+            "max_turns": node.max_iterations,
+            "model": node.model,
+            "permission_mode": self._permission_mode,
+            "cwd": self._cwd,
+            "env": env,
+        }
+        if self._max_budget_usd:
+            kwargs["max_budget_usd"] = self._max_budget_usd
+        if self._cli_path:
+            kwargs["cli_path"] = self._cli_path
+        session = {**self._session_options, **{k: v for k, v in node_opts.items() if v is not None}}
+        known = _sdk_option_fields()
+        for key, value in session.items():
+            if known is None or key in known:
+                kwargs[key] = value
+        return kwargs
 
     # ------------------------------------------------------------------
     # Two execution paths

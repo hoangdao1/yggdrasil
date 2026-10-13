@@ -20,6 +20,7 @@ from yggdrasil_lm.backends.claude_code import (
     ClaudeCodeAgentError,
     ClaudeCodeExecutor,
     _AgentRunResult,
+    SESSION_OPTION_NAMES,
     _build_mcp_server,
     _json_type_to_python,
     _sdk_tool_schema,
@@ -444,3 +445,123 @@ def test_sdk_tool_schema_shorthand_without_type():
     assert _sdk_tool_schema(None) == {"input": str}
 
 
+# ---------------------------------------------------------------------------
+# Session options: isolation, per-node overrides
+# ---------------------------------------------------------------------------
+
+def test_session_kwargs_defaults_unchanged(store, agent):
+    """With no session options the options built are exactly today's."""
+    ex = ClaudeCodeExecutor(store, cwd="/w")
+    kw = ex._session_kwargs(agent, "sys", {})
+    assert kw == {
+        "system_prompt": "sys",
+        "allowed_tools": ["Read", "Glob", "Grep", "Bash", "WebSearch"],
+        "mcp_servers": None,
+        "max_turns": 3,
+        "model": "claude-haiku-4-5-20251001",
+        "permission_mode": "default",
+        "cwd": "/w",
+        "env": {"ANTHROPIC_API_KEY": ""},
+    }
+
+
+def test_session_kwargs_isolation_options_passed(store, agent):
+    ex = ClaudeCodeExecutor(
+        store,
+        setting_sources=[],
+        skills=[],
+        strict_mcp_config=True,
+        tools=["Read", "Write"],
+        disallowed_tools=["Agent", "Task"],
+        env={"ENABLE_CLAUDEAI_MCP_SERVERS": "false"},
+    )
+    with patch("yggdrasil_lm.backends.claude_code._sdk_option_fields", return_value=None):
+        kw = ex._session_kwargs(agent, "sys", {})
+    assert kw["setting_sources"] == []
+    assert kw["skills"] == []
+    assert kw["strict_mcp_config"] is True
+    assert kw["tools"] == ["Read", "Write"]
+    assert kw["disallowed_tools"] == ["Agent", "Task"]
+    assert kw["env"] == {"ENABLE_CLAUDEAI_MCP_SERVERS": "false", "ANTHROPIC_API_KEY": ""}
+
+
+def test_session_kwargs_api_key_cannot_be_overridden(store, agent):
+    ex = ClaudeCodeExecutor(store, env={"ANTHROPIC_API_KEY": "sk-x"})
+    assert ex._session_kwargs(agent, "s", {})["env"]["ANTHROPIC_API_KEY"] == ""
+
+
+def test_session_kwargs_node_overrides_executor(store):
+    node = AgentNode(
+        name="n", model="claude-haiku-4-5-20251001", max_iterations=7, max_tokens=4000,
+        attributes={"claude_code": {
+            "effort": "low",
+            "disallowed_tools": ["Agent"],
+            "env": {"A": 1},
+            "max_output_tokens": 12000,
+        }},
+    )
+    ex = ClaudeCodeExecutor(store, effort="high", disallowed_tools=["Agent", "Task"], env={"B": "2"})
+    with patch("yggdrasil_lm.backends.claude_code._sdk_option_fields", return_value=None):
+        kw = ex._session_kwargs(node, "s", {})
+    assert kw["effort"] == "low"
+    assert kw["disallowed_tools"] == ["Agent"]
+    assert kw["max_turns"] == 7
+    assert kw["env"] == {"B": "2", "A": "1", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "12000",
+                         "ANTHROPIC_API_KEY": ""}
+
+
+def test_session_kwargs_honor_max_tokens(store, agent):
+    ex = ClaudeCodeExecutor(store, honor_max_tokens=True)
+    assert ex._session_kwargs(agent, "s", {})["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == str(agent.max_tokens)
+
+
+def test_session_kwargs_drops_fields_the_sdk_lacks(store, agent):
+    """An older SDK is never handed a keyword it would refuse."""
+    ex = ClaudeCodeExecutor(store, effort="low", skills=[])
+    with patch("yggdrasil_lm.backends.claude_code._sdk_option_fields", return_value={"skills"}):
+        kw = ex._session_kwargs(agent, "s", {})
+    assert "effort" not in kw
+    assert kw["skills"] == []
+
+
+def test_unknown_session_option_refused(store):
+    with pytest.raises(TypeError, match="bogus"):
+        ClaudeCodeExecutor(store, bogus=1)
+
+
+def test_unknown_node_option_refused(store):
+    node = AgentNode(name="n", attributes={"claude_code": {"nope": 1}})
+    ex = ClaudeCodeExecutor(store)
+    with pytest.raises(ValueError, match="nope"):
+        ex._session_kwargs(node, "s", {})
+
+
+def test_session_option_names_cover_isolation():
+    for name in ("tools", "disallowed_tools", "setting_sources", "strict_mcp_config",
+                 "skills", "agents", "effort", "thinking"):
+        assert name in SESSION_OPTION_NAMES
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_passes_session_kwargs(store, agent):
+    """The options the SDK receives are the ones _session_kwargs builds."""
+    await store.upsert_node(agent)
+    captured = {}
+
+    def fake_options(**kw):
+        captured.update(kw)
+        return MagicMock()
+
+    with (
+        patch("yggdrasil_lm.backends.claude_code._SDK_AVAILABLE", True),
+        patch("yggdrasil_lm.backends.claude_code.ClaudeCodeExecutor._run_with_query",
+              new_callable=AsyncMock,
+              return_value=_AgentRunResult(text="ok", tool_calls=0, cost_usd=None)),
+        patch("yggdrasil_lm.backends.claude_code._build_mcp_server", return_value=None),
+        patch("yggdrasil_lm.backends.claude_code.ClaudeAgentOptions", fake_options),
+        patch("yggdrasil_lm.backends.claude_code._sdk_option_fields", return_value=None),
+    ):
+        ex = ClaudeCodeExecutor(store, setting_sources=[], strict_mcp_config=True)
+        await ex.run(agent.node_id, "hi")
+    assert captured["setting_sources"] == []
+    assert captured["strict_mcp_config"] is True
