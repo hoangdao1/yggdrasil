@@ -1,8 +1,0 @@
-"""Built-in echo tool."""
-
-from typing import Any
-
-
-async def echo(input: dict[str, Any]) -> str:
-    """Simple echo tool for testing."""
-    return f"Echo: {input}"

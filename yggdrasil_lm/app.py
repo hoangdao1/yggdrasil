@@ -1,0 +1,580 @@
+"""Beginner-friendly builder API for yggdrasil.
+
+This module keeps the core graph primitives available while offering a smaller,
+task-oriented surface for first-time users and code-generation tools.
+"""
+
+from __future__ import annotations
+
+import base64
+import mimetypes
+from pathlib import Path
+from typing import Any
+
+from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
+from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.executor import GraphExecutor, QueryContent
+from yggdrasil_lm.core.nodes import (
+    AgentNode,
+    ContextNode,
+    FactSource,
+    GraphNode,
+    PromptNode,
+    ReasonerNode,
+    ToolNode,
+    TransformNode,
+)
+from yggdrasil_lm.core.store import GraphStore, NetworkXGraphStore
+from yggdrasil_lm.tools.registry import ToolRegistry, default_registry
+
+NodeRef = AgentNode | ToolNode | ContextNode | PromptNode | TransformNode | ReasonerNode | GraphNode | str
+END_NODE = "__END__"
+
+
+def create_agent(
+    name: str,
+    *,
+    description: str = "",
+    model: str = "claude-sonnet-4-6",
+    system_prompt: str = "",
+    routing_table: dict[str, str] | None = None,
+    max_iterations: int = 10,
+    **kwargs: Any,
+) -> AgentNode:
+    """Create an AgentNode with beginner-friendly defaults."""
+    return AgentNode(
+        name=name,
+        description=description,
+        model=model,
+        system_prompt=system_prompt,
+        routing_table=routing_table or {"default": END_NODE},
+        max_iterations=max_iterations,
+        **kwargs,
+    )
+
+
+def create_tool(
+    name: str,
+    *,
+    callable_ref: str,
+    description: str = "",
+    input_schema: dict[str, Any] | None = None,
+    output_schema: dict[str, Any] | None = None,
+    is_async: bool = True,
+    **kwargs: Any,
+) -> ToolNode:
+    """Create a ToolNode with sane defaults."""
+    return ToolNode(
+        name=name,
+        description=description,
+        callable_ref=callable_ref,
+        input_schema=input_schema or {"type": "object", "properties": {}},
+        output_schema=output_schema or {},
+        is_async=is_async,
+        **kwargs,
+    )
+
+
+def create_transform(
+    name: str,
+    *,
+    callable_ref: str,
+    description: str = "",
+    input_keys: list[str] | None = None,
+    output_key: str = "",
+    is_async: bool = True,
+    **kwargs: Any,
+) -> TransformNode:
+    """Create a TransformNode — a pure-Python data reshape step with no LLM."""
+    return TransformNode(
+        name=name,
+        description=description,
+        callable_ref=callable_ref,
+        input_keys=input_keys or [],
+        output_key=output_key,
+        is_async=is_async,
+        **kwargs,
+    )
+
+
+def create_reasoner(
+    name: str,
+    *,
+    program: str = "",
+    rules: list[dict[str, Any]] | None = None,
+    state_keys: list[str] | None = None,
+    edge_types: list[str] | None = None,
+    include_node_facts: bool = False,
+    query: list[str] | None = None,
+    output_key: str = "inferred",
+    emit_derived_only: bool = True,
+    with_proof: bool = False,
+    fail_on_empty: bool = False,
+    description: str = "",
+    **kwargs: Any,
+) -> ReasonerNode:
+    """Create a ReasonerNode — a symbolic Datalog inference step (no LLM).
+
+    ``program`` is Datalog source (see ``yggdrasil_lm.symbolic.datalog``); facts
+    are pulled from ``state_keys`` and/or knowledge-graph ``edge_types``.
+    """
+    return ReasonerNode(
+        name=name,
+        description=description,
+        program=program,
+        rules=rules or [],
+        fact_source=FactSource(
+            state_keys=state_keys or [],
+            edge_types=edge_types or [],
+            include_node_facts=include_node_facts,
+        ),
+        query=query or [],
+        output_key=output_key,
+        emit_derived_only=emit_derived_only,
+        with_proof=with_proof,
+        fail_on_empty=fail_on_empty,
+        **kwargs,
+    )
+
+
+def create_context(
+    name: str,
+    content: str,
+    *,
+    description: str = "",
+    **kwargs: Any,
+) -> ContextNode:
+    """Create a ContextNode."""
+    return ContextNode(name=name, content=content, description=description, **kwargs)
+
+
+def create_subgraph(
+    name: str,
+    *,
+    entry: AgentNode | str,
+    exit: AgentNode | str | None = None,
+    description: str = "",
+    strategy: str = "sequential",
+    input_keys: list[str] | None = None,
+    input_map: dict[str, str] | None = None,
+    scope_outputs: bool = True,
+    **kwargs: Any,
+) -> GraphNode:
+    """Create a GraphNode that wraps a sub-graph as a single reusable step.
+
+    Args:
+        entry: AgentNode or node_id that the sub-graph starts from.
+        exit:  AgentNode or node_id whose output is the sub-graph's result.
+               Defaults to entry.
+        strategy: "sequential" | "parallel" | "topological".
+        input_keys: parent node_ids / state keys to thread into the sub-run
+            as its initial query.
+        input_map: {alias: source_key} pairs surfaced under state.data.
+        scope_outputs: keep inner outputs scoped (default) or merge into parent.
+    """
+    entry_id = entry if isinstance(entry, str) else entry.node_id
+    exit_id = (
+        exit if isinstance(exit, str) else (exit.node_id if exit is not None else "")
+    )
+    return GraphNode(
+        name=name,
+        description=description,
+        entry_node_id=entry_id,
+        exit_node_id=exit_id,
+        strategy=strategy,
+        input_keys=input_keys or [],
+        input_map=input_map or {},
+        scope_outputs=scope_outputs,
+        **kwargs,
+    )
+
+
+def create_prompt(
+    name: str,
+    template: str,
+    *,
+    description: str = "",
+    **kwargs: Any,
+) -> PromptNode:
+    """Create a PromptNode."""
+    return PromptNode(name=name, template=template, description=description, **kwargs)
+
+
+def create_executor(
+    store: GraphStore,
+    *,
+    provider: str | None = None,
+    backend: LLMBackend | None = None,
+    **backend_kwargs: Any,
+) -> GraphExecutor:
+    """Create a GraphExecutor from a small set of backend profiles.
+
+    Args:
+        store: Graph storage backend.
+        provider: One of "anthropic", "claude-code", "compatible", "openai",
+            "openai-compatible", or None.
+        backend: Explicit backend instance. Takes precedence over provider.
+        **backend_kwargs: Passed to the backend constructor when provider is set.
+    """
+    if backend is not None:
+        return GraphExecutor(store, backend=backend)
+    if provider is None:
+        return GraphExecutor(store)
+
+    provider_key = provider.strip().lower()
+    match provider_key:
+        case "anthropic":
+            return GraphExecutor(store, backend=AnthropicBackend(**backend_kwargs))
+        case "claude-code" | "claude_code" | "claudecode":
+            from yggdrasil_lm.backends.claude_code import ClaudeCodeExecutor
+            return ClaudeCodeExecutor(store, **backend_kwargs)
+        case "openai" | "openai-compatible" | "compatible":
+            return GraphExecutor(store, backend=OpenAIBackend(**backend_kwargs))
+        case _:
+            raise ValueError(
+                f"Unknown provider: {provider!r}. Use 'anthropic', 'claude-code', "
+                "'compatible', or pass backend=..."
+            )
+
+
+class GraphApp:
+    """Thin builder facade for the yggdrasil runtime.
+
+    This class keeps the low-level graph primitives available, but presents them
+    in a sequence that is easier to teach:
+    1. create nodes
+    2. connect them
+    3. register tool implementations
+    4. run the graph
+    """
+
+    def __init__(
+        self,
+        *,
+        store: GraphStore | None = None,
+        executor: GraphExecutor | None = None,
+        provider: str | None = None,
+        backend: LLMBackend | None = None,
+        tool_registry: ToolRegistry | None = None,
+        **backend_kwargs: Any,
+    ) -> None:
+        self.store = store or NetworkXGraphStore()
+        self._executor = executor
+        self._provider = provider
+        self._backend = backend
+        self._backend_kwargs = backend_kwargs
+        self.tool_registry = tool_registry or default_registry
+
+    @property
+    def executor(self) -> GraphExecutor:
+        """Lazily create the executor when it is first needed."""
+        if self._executor is None:
+            self._executor = create_executor(
+                self.store,
+                provider=self._provider,
+                backend=self._backend,
+                **self._backend_kwargs,
+            )
+        return self._executor
+
+    async def add_agent(self, name: str, **kwargs: Any) -> AgentNode:
+        agent = create_agent(name, **kwargs)
+        await self.store.upsert_node(agent)
+        return agent
+
+    async def add_tool(
+        self,
+        name: str,
+        *,
+        fn: Any | None = None,
+        attach: bool = False,
+        agent: AgentNode | str | None = None,
+        **kwargs: Any,
+    ) -> ToolNode:
+        tool = create_tool(name, **kwargs)
+        await self.store.upsert_node(tool)
+        if fn is not None:
+            self.register_tool(tool.callable_ref, fn)
+        if attach:
+            if agent is None:
+                raise ValueError("agent=... is required when attach=True")
+            await self.connect_tool(agent, tool)
+        return tool
+
+    async def add_transform(
+        self,
+        name: str,
+        *,
+        fn: Any | None = None,
+        **kwargs: Any,
+    ) -> TransformNode:
+        transform = create_transform(name, **kwargs)
+        await self.store.upsert_node(transform)
+        if fn is not None:
+            self.executor.register_tool(transform.callable_ref, fn)
+        return transform
+
+    async def add_reasoner(self, name: str, **kwargs: Any) -> ReasonerNode:
+        """Register a ReasonerNode — the symbolic half of a neurosymbolic graph.
+
+        See ``create_reasoner`` for arguments. Example::
+
+            reasoner = await app.add_reasoner(
+                "EligibilityRules",
+                program='''
+                    eligible(?p) :- applicant(?p, ?age), ?age >= 18, resident(?p).
+                ''',
+                state_keys=["facts"],   # facts an upstream agent extracted
+                query=["eligible"],
+            )
+        """
+        reasoner = create_reasoner(name, **kwargs)
+        await self.store.upsert_node(reasoner)
+        return reasoner
+
+    async def add_context(self, name: str, content: str, **kwargs: Any) -> ContextNode:
+        ctx = create_context(name, content, **kwargs)
+        await self.store.upsert_node(ctx)
+        return ctx
+
+    async def add_image_context(
+        self,
+        name: str,
+        *,
+        url: str | None = None,
+        path: str | Path | None = None,
+        data: str | None = None,
+        media_type: str | None = None,
+        description: str = "",
+        **kwargs: Any,
+    ) -> ContextNode:
+        """Create an image ContextNode for visual RAG.
+
+        Provide exactly one of ``url``, ``path``, or ``data``.
+
+        Args:
+            name:        Human-readable label shown in traces.
+            url:         Publicly accessible image URL.
+            path:        Local file path — the image is base64-encoded at call time.
+            data:        Pre-encoded base64 string (no ``data:`` URI prefix).
+            media_type:  MIME type (e.g. ``"image/png"``). Auto-detected from
+                         ``path`` when omitted; defaults to ``"image/jpeg"``.
+            description: Optional description stored on the node.
+
+        Returns:
+            A :class:`ContextNode` with ``content_type="image"`` wired for
+            visual RAG.  Connect it to an agent with
+            ``await app.connect_context(agent, ctx_node)``.
+
+        Example::
+
+            photo = await app.add_image_context("Product photo", url="https://cdn.example.com/p.jpg")
+            await app.connect_context(agent, photo)
+            ctx = await app.run(agent, "Describe this product.")
+        """
+        sources = [s for s in (url, path, data) if s is not None]
+        if len(sources) != 1:
+            raise ValueError("Provide exactly one of: url=, path=, or data=")
+
+        if url is not None:
+            node = ContextNode(
+                name=name,
+                description=description,
+                content=url,
+                content_type="image",
+                attributes={"image_source": "url"},
+                **kwargs,
+            )
+        else:
+            if path is not None:
+                file_path = Path(path)
+                if media_type is None:
+                    _suffix_map = {
+                        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+                    }
+                    media_type = _suffix_map.get(file_path.suffix.lower())
+                    if media_type is None:
+                        guessed, _ = mimetypes.guess_type(str(file_path))
+                        media_type = guessed or "image/jpeg"
+                raw_data = base64.standard_b64encode(file_path.read_bytes()).decode()
+            else:
+                raw_data = data  # type: ignore[assignment]
+                if media_type is None:
+                    media_type = "image/jpeg"
+
+            node = ContextNode(
+                name=name,
+                description=description,
+                content=raw_data,
+                content_type="image",
+                attributes={"image_source": "base64", "media_type": media_type},
+                **kwargs,
+            )
+
+        await self.store.upsert_node(node)
+        return node
+
+    async def add_subgraph(
+        self,
+        name: str,
+        *,
+        entry: AgentNode | str,
+        exit: AgentNode | str | None = None,
+        **kwargs: Any,
+    ) -> GraphNode:
+        """Register a GraphNode that wraps a sub-graph as a single reusable step.
+
+        See ``create_subgraph`` for argument details.
+        """
+        node = create_subgraph(name, entry=entry, exit=exit, **kwargs)
+        await self.store.upsert_node(node)
+        return node
+
+    async def add_prompt(self, name: str, template: str, **kwargs: Any) -> PromptNode:
+        prompt = create_prompt(name, template, **kwargs)
+        await self.store.upsert_node(prompt)
+        return prompt
+
+    def register_tool(self, callable_ref: str, fn: Any) -> None:
+        self.executor.register_tool(callable_ref, fn)
+
+    def use_default_tools(self) -> None:
+        self.tool_registry.attach(self.executor)
+
+    async def connect_tool(
+        self,
+        agent: AgentNode | str,
+        tool: ToolNode | str,
+        *,
+        weight: float | None = None,
+        **kwargs: Any,
+    ) -> Edge:
+        return await self.store.attach_tool(
+            self._node_id(agent),
+            self._node_id(tool),
+            weight=weight,
+            **kwargs,
+        )
+
+    async def connect_context(
+        self,
+        agent: AgentNode | str,
+        context: ContextNode | str,
+        *,
+        weight: float | None = None,
+        **kwargs: Any,
+    ) -> Edge:
+        return await self.store.attach_context(
+            self._node_id(agent),
+            self._node_id(context),
+            weight=weight,
+            **kwargs,
+        )
+
+    async def connect_prompt(
+        self,
+        agent: AgentNode | str,
+        prompt: PromptNode | str,
+        **kwargs: Any,
+    ) -> Edge:
+        edge = Edge.has_prompt(self._node_id(agent), self._node_id(prompt), **kwargs)
+        await self.store.upsert_edge(edge)
+        return edge
+
+    async def delegate(
+        self,
+        src_agent: AgentNode | str,
+        dst_agent: AgentNode | str,
+        **kwargs: Any,
+    ) -> Edge:
+        edge = Edge.delegates_to(self._node_id(src_agent), self._node_id(dst_agent), **kwargs)
+        await self.store.upsert_edge(edge)
+        return edge
+
+    async def run(
+        self,
+        entry_node: AgentNode | str,
+        query: QueryContent,
+        *,
+        strategy: str = "sequential",
+        **kwargs: Any,
+    ):
+        return await self.executor.run(
+            entry_node_id=self._node_id(entry_node),
+            query=query,
+            strategy=strategy,
+            **kwargs,
+        )
+
+    async def run_subgraph(
+        self,
+        subgraph: GraphNode | str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        query: str | None = None,
+        **kwargs: Any,
+    ):
+        """Run a ``GraphNode`` in isolation — the testing / unit-of-work entry point.
+
+        Args:
+            subgraph: A ``GraphNode`` (or its node_id) to invoke directly.
+            inputs:   Dict merged into ``state.data`` before the sub-graph fires.
+                      Keys should match whatever the inner nodes (or the
+                      ``input_map`` source keys) read from state.
+            query:    Initial query string. If omitted, ``input_keys`` /
+                      ``input_map`` on the GraphNode drive the resolved query;
+                      otherwise a placeholder empty string is used.
+            **kwargs: Forwarded to ``executor.run`` (e.g. ``max_hops``, ``options``).
+
+        Returns:
+            The ``ExecutionContext`` from the run. The sub-graph's result lives
+            at ``ctx.outputs[subgraph.node_id]``.
+        """
+        state = dict(kwargs.pop("state", None) or {})
+        if inputs:
+            state.update(inputs)
+        return await self.executor.run(
+            entry_node_id=self._node_id(subgraph),
+            query=query if query is not None else "",
+            state=state or None,
+            **kwargs,
+        )
+
+    async def dry_run_subgraph(
+        self,
+        subgraph: GraphNode | str,
+        *,
+        inputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve a sub-graph's wiring without executing — for fast smoke tests.
+
+        Returns the entry/exit ids, strategy, resolved query, and state overlay
+        the executor would use if you ran this sub-graph now. See
+        ``GraphExecutor.resolve_subgraph_inputs``.
+        """
+        from yggdrasil_lm.core.executor import ExecutionContext
+
+        ctx = ExecutionContext(query="")
+        if inputs:
+            ctx.state.data.update(inputs)
+        return await self.executor.resolve_subgraph_inputs(self._node_id(subgraph), ctx)
+
+    def _node_id(self, node: NodeRef) -> str:
+        match node:
+            case str():
+                return node
+            case _:
+                return node.node_id
+
+
+__all__ = [
+    "GraphApp",
+    "create_agent",
+    "create_context",
+    "create_executor",
+    "create_prompt",
+    "create_subgraph",
+    "create_tool",
+    "create_transform",
+]

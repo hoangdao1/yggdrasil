@@ -1,0 +1,136 @@
+"""Helpers for building multimodal image content blocks.
+
+Follows the Anthropic Messages API content-block schema.  The backend layer
+automatically converts these to OpenAI ``image_url`` format when needed.
+
+Quickstart::
+
+    from yggdrasil_lm.media import image_from_file, image_from_url, build_query
+
+    # Ask about a local file
+    query = build_query("What's in this image?", image_from_file("photo.jpg"))
+    ctx = await app.run(agent, query)
+
+    # Visual RAG — attach an image as context to an agent
+    img_ctx = await app.add_image_context("Product photo", url="https://example.com/img.jpg")
+    await app.connect_context(agent, img_ctx)
+"""
+
+from __future__ import annotations
+
+import base64
+import mimetypes
+from pathlib import Path
+from typing import Any
+
+# Re-export the canonical QueryContent type so callers only need one import.
+from yggdrasil_lm.core.executor import QueryContent
+
+ImageBlock = dict[str, Any]
+
+_SUFFIX_TO_MEDIA_TYPE: dict[str, str] = {
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png":  "image/png",
+    ".gif":  "image/gif",
+    ".webp": "image/webp",
+}
+
+
+def image_from_file(path: str | Path, *, media_type: str | None = None) -> ImageBlock:
+    """Build an Anthropic-format image block from a local file (base64-encoded).
+
+    Args:
+        path:       Path to the image file.
+        media_type: MIME type such as ``"image/png"``.  Auto-detected from the
+                    file extension when omitted.
+
+    Returns:
+        An Anthropic content block dict::
+
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "..."}}
+    """
+    path = Path(path)
+    if media_type is None:
+        media_type = _SUFFIX_TO_MEDIA_TYPE.get(path.suffix.lower())
+        if media_type is None:
+            guessed, _ = mimetypes.guess_type(str(path))
+            media_type = guessed or "image/jpeg"
+    data = base64.standard_b64encode(path.read_bytes()).decode()
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data},
+    }
+
+
+def image_from_url(url: str) -> ImageBlock:
+    """Build an Anthropic-format image block from a publicly accessible URL.
+
+    Args:
+        url: A ``https://`` URL pointing to the image.
+
+    Returns:
+        An Anthropic content block dict::
+
+            {"type": "image", "source": {"type": "url", "url": "..."}}
+    """
+    return {"type": "image", "source": {"type": "url", "url": url}}
+
+
+def image_from_base64(data: str, media_type: str = "image/jpeg") -> ImageBlock:
+    """Build an Anthropic-format image block from a pre-encoded base64 string.
+
+    Args:
+        data:       Base64-encoded image bytes (no ``data:`` prefix).
+        media_type: MIME type, e.g. ``"image/png"``.
+
+    Returns:
+        An Anthropic content block dict.
+    """
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": data},
+    }
+
+
+def build_query(text: str, *images: ImageBlock) -> QueryContent:
+    """Combine a text prompt with one or more image blocks into a ``QueryContent`` list.
+
+    The text block is placed first so the question appears before the images,
+    matching the natural reading order most models are trained on.
+
+    Args:
+        text:   The user's question or instruction.
+        *images: One or more image blocks created by ``image_from_file``,
+                 ``image_from_url``, or ``image_from_base64``.
+
+    Returns:
+        A plain ``str`` if no images are provided, otherwise a
+        ``list[dict]`` of content blocks::
+
+            [{"type": "text", "text": "..."}, {"type": "image", ...}, ...]
+
+    Example::
+
+        query = build_query(
+            "Compare these two diagrams.",
+            image_from_file("before.png"),
+            image_from_file("after.png"),
+        )
+        ctx = await app.run(agent, query)
+    """
+    if not images:
+        return text
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": text}]
+    blocks.extend(images)
+    return blocks
+
+
+__all__ = [
+    "ImageBlock",
+    "QueryContent",
+    "image_from_file",
+    "image_from_url",
+    "image_from_base64",
+    "build_query",
+]

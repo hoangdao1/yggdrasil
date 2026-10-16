@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "coconut>=3.0"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
@@ -38,7 +38,7 @@ openai      = ["openai>=1.0"]
 neo4j       = ["neo4j>=5.0"]
 claude-code = ["claude-agent-sdk>=0.1"]
 embeddings  = ["sentence-transformers>=3.0"]
-dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "rich>=13.0", "coconut>=3.0"]
+dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "rich>=13.0"]
 observe     = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 viz         = ["fastapi>=0.100", "uvicorn>=0.24", "websockets>=11.0"]
 
@@ -52,19 +52,8 @@ Repository = "https://github.com/hoangdao1/yggdrasil"
 Issues = "https://github.com/hoangdao1/yggdrasil/issues"
 Documentation = "https://github.com/hoangdao1/yggdrasil#readme"
 
-[tool.hatch.build.hooks.custom]
-path = "hatch_build.py"
-
-[tool.coconut]
-target = "sys"
-strict = false
-
 [tool.hatch.build.targets.wheel]
 packages = ["yggdrasil_lm"]
-# Coconut compiles .coco -> .py during the build hook; those .py are
-# git-ignored, so force-include them as build artifacts or the wheel ships
-# source-only and is non-importable.
-artifacts = ["yggdrasil_lm/**/*.py"]
 
 [tool.hatch.build.targets.sdist]
 include = [
