@@ -1,13 +1,13 @@
 # Capturing Domain Knowledge
 
-yggdrasil's graph is primarily an **orchestration graph**: agents, tools, prompts, and context wired together so the runtime can execute and explain them. But the same store can hold a second, independent layer — a **domain knowledge graph** of whatever entities *your* application cares about (customers and orders, papers and citations, PDF fields and form rules, …).
+yggdrasil's graph is primarily an **orchestration graph**: agents, tools, prompts, and context wired together so the runtime can execute and explain them. But the same store can hold a second, independent layer — a **domain knowledge graph** of whatever entities *your* application cares about (customers and orders, papers and citations, API endpoints and their monitors, …).
 
 This page shows how to model any domain in that layer using three additions that are deliberately **domain-agnostic** — yggdrasil never interprets them:
 
 | Primitive | Purpose |
 |---|---|
-| `Node.domain_type: str \| None` | Tags a node as a domain entity of some kind (`"customer"`, `"paper"`, `"field"`). |
-| `EdgeType.RELATES` + `Edge.relation: str \| None` | A neutral edge type whose **label** (`"ordered"`, `"cites"`, `"targets"`) carries the relationship meaning. |
+| `Node.domain_type: str \| None` | Tags a node as a domain entity of some kind (`"customer"`, `"paper"`, `"endpoint"`). |
+| `EdgeType.RELATES` + `Edge.relation: str \| None` | A neutral edge type whose **label** (`"ordered"`, `"cites"`, `"checks"`) carries the relationship meaning. |
 | Store filters: `list_nodes(domain_type=…)`, `list_edges(relation=…)`, `get_edges(…, relation=…)` | Query the domain layer without scanning the orchestration nodes. |
 
 The key idea: **you never edit yggdrasil's `NodeType` / `EdgeType` enums to add a domain.** Entities are `CONTEXT` nodes carrying a `domain_type`; relationships are `RELATES` edges carrying a `relation` label. The vocabulary lives in *data*, so the framework stays general and your domain stays yours.
@@ -61,46 +61,46 @@ The same store could simultaneously hold the agents and tools that *process* the
 
 ---
 
-## Grounding it: a UI-form domain
+## Grounding it: an API-catalog domain
 
-A common shape for this layer — capturing how a form's **data fields**, **UI widgets**, and **validation rules** relate:
+A common shape for this layer — capturing how an API's **endpoints**, **SDK methods**, and **monitors** relate:
 
 ```python
-field  = ContextNode(name="email",       domain_type="field",  attributes={"path": ["email"]})
-widget = ContextNode(name="email_input", domain_type="widget", attributes={"widget_type": "TextBox"})
-rule   = ContextNode(name="require_email", domain_type="rule", attributes={"expr": "field is not empty"})
-for n in (field, widget, rule):
+endpoint   = ContextNode(name="get_user",         domain_type="endpoint",   attributes={"path": "/users/{id}"})
+sdk_method = ContextNode(name="client.get_user",  domain_type="sdk_method", attributes={"language": "python"})
+monitor    = ContextNode(name="get_user_latency", domain_type="monitor",    attributes={"expr": "p95 < 300ms"})
+for n in (endpoint, sdk_method, monitor):
     await store.upsert_node(n)
 
-await store.upsert_edge(Edge.relates(widget.node_id, field.node_id, relation="presents"))
-await store.upsert_edge(Edge.relates(rule.node_id,   field.node_id, relation="targets"))
+await store.upsert_edge(Edge.relates(sdk_method.node_id, endpoint.node_id, relation="wraps"))
+await store.upsert_edge(Edge.relates(monitor.node_id,    endpoint.node_id, relation="checks"))
 ```
 
 Now the diagnostic questions become one-line queries:
 
 ```python
-# Fields that no rule targets ("missing rule" candidates)
-fields = await store.list_nodes(domain_type="field")
-orphans = [f for f in fields
-           if not await store.get_edges(f.node_id, direction="in", relation="targets")]
+# Endpoints that no monitor checks ("unmonitored" candidates)
+endpoints = await store.list_nodes(domain_type="endpoint")
+orphans = [f for f in endpoints
+           if not await store.get_edges(f.node_id, direction="in", relation="checks")]
 
-# Fields with >1 rule targeting them ("redundant rule" candidates)
-crowded = [f for f in fields
-           if len(await store.get_edges(f.node_id, direction="in", relation="targets")) > 1]
+# Endpoints with >1 monitor checking them ("duplicate monitor" candidates)
+crowded = [f for f in endpoints
+           if len(await store.get_edges(f.node_id, direction="in", relation="checks")) > 1]
 
-# Widgets presenting a field that no longer exists ("incorrect mapping")
-# -> follow each widget's `presents` edge and check the field node still resolves.
+# SDK methods wrapping an endpoint that no longer exists ("stale binding")
+# -> follow each SDK method's `wraps` edge and check the endpoint node still resolves.
 ```
 
 ---
 
 ## Traversal
 
-`get_edges(node_id, direction=…, relation=…)` is the primary domain-traversal primitive: it is the one that filters by `relation` **and** lets you choose `direction="in" | "out" | "both"`. Since relationship direction is meaningful (a *rule* `targets` a *field*, so the edge points rule → field), pick the direction that matches your question:
+`get_edges(node_id, direction=…, relation=…)` is the primary domain-traversal primitive: it is the one that filters by `relation` **and** lets you choose `direction="in" | "out" | "both"`. Since relationship direction is meaningful (a *monitor* `checks` an *endpoint*, so the edge points monitor → endpoint), pick the direction that matches your question:
 
 ```python
-# Rules that target this field — edges point INTO the field, so direction="in".
-incoming = await store.get_edges(field.node_id, direction="in", relation="targets")
+# Monitors that check this endpoint — edges point INTO the endpoint, so direction="in".
+incoming = await store.get_edges(endpoint.node_id, direction="in", relation="checks")
 rule_ids = [e.src_id for e in incoming]
 ```
 
@@ -112,21 +112,21 @@ async def follow(store, node_id, relation, direction="out"):
     ids   = [e.dst_id if e.src_id == node_id else e.src_id for e in edges]
     return [n for nid in ids if (n := await store.get_node(nid))]
 
-rules_for_field = await follow(store, field.node_id, relation="targets", direction="in")
-fields_a_rule_targets = await follow(store, rule.node_id, relation="targets", direction="out")
+monitors_for_endpoint = await follow(store, endpoint.node_id, relation="checks", direction="in")
+endpoints_a_monitor_checks = await follow(store, monitor.node_id, relation="checks", direction="out")
 ```
 
 **`neighbors` is for outgoing-only walks** filtered by edge *type* (it has no `relation` parameter and follows `direction="out"`). Use it from the "source" end of your relationships:
 
 ```python
-# Nodes `rule` points at via any RELATES edge, one hop out.
-downstream = await store.neighbors(rule.node_id, edge_type=EdgeType.RELATES, depth=1)
+# Nodes `monitor` points at via any RELATES edge, one hop out.
+downstream = await store.neighbors(monitor.node_id, edge_type=EdgeType.RELATES, depth=1)
 ```
 
 Two sharp edges to know:
 
 - **`depth` is the exact hop distance, not a radius.** `neighbors(..., depth=2)` returns nodes *exactly* two hops out — not the union of hops 1 and 2. On a one-hop graph, `depth=2` returns `[]`. Call it per level if you need each ring.
-- **It follows outgoing edges only.** Calling `neighbors` on a node whose domain edges all point *inward* (like `field` above) returns `[]`; reach those with `get_edges(..., direction="in")` / `follow(..., direction="in")` instead.
+- **It follows outgoing edges only.** Calling `neighbors` on a node whose domain edges all point *inward* (like `endpoint` above) returns `[]`; reach those with `get_edges(..., direction="in")` / `follow(..., direction="in")` instead.
 
 ---
 
@@ -135,40 +135,40 @@ Two sharp edges to know:
 **Edge payload & strength.** `Edge.relates` accepts the same kwargs as any edge — use `attributes` for relationship metadata and `weight` for ranking:
 
 ```python
-Edge.relates(rule.node_id, field.node_id, relation="targets",
+Edge.relates(monitor.node_id, endpoint.node_id, relation="checks",
              weight=0.9, attributes={"confidence": 0.9, "source": "import"})
 ```
 
-**Direction is meaningful.** `relates(A, B, relation="targets")` is `A → B`. Query incoming vs outgoing with `direction="in" | "out" | "both"`. Pick a convention per relation and keep it (e.g. *rule* → *field* for `targets`) so your filters stay predictable.
+**Direction is meaningful.** `relates(A, B, relation="checks")` is `A → B`. Query incoming vs outgoing with `direction="in" | "out" | "both"`. Pick a convention per relation and keep it (e.g. *monitor* → *endpoint* for `checks`) so your filters stay predictable.
 
-**Multiple relations between the same pair** are fine — the store is a multigraph. A widget can both `presents` and (say) `validates` the same field as two separate `RELATES` edges.
+**Multiple relations between the same pair** are fine — the store is a multigraph. An SDK method can both `wraps` and (say) `documents` the same endpoint as two separate `RELATES` edges.
 
 **Evolution over time (bi-temporal).** Domain nodes and edges inherit `valid_at` / `invalid_at`. Instead of deleting when a mapping changes, **expire** the old edge so history is preserved and `explain_run` can show *why* a past run behaved as it did:
 
 ```python
-stale = (await store.get_edges(field.node_id, direction="in", relation="targets"))[0]
+stale = (await store.get_edges(endpoint.node_id, direction="in", relation="checks"))[0]
 await store.upsert_edge(stale.expire())          # soft-retire; invalid_at = now
-await store.upsert_edge(Edge.relates(new_rule_id, field.node_id, relation="targets"))
+await store.upsert_edge(Edge.relates(new_monitor_id, endpoint.node_id, relation="checks"))
 
-current = await store.list_edges(relation="targets")               # only_valid=True by default
-all_ever = await store.list_edges(relation="targets", only_valid=False)
+current = await store.list_edges(relation="checks")               # only_valid=True by default
+all_ever = await store.list_edges(relation="checks", only_valid=False)
 ```
 
-**Multi-tenancy.** Set `group_id` to partition graphs (per form, per tenant, per session). Combine with `domain_type` for narrow scans:
+**Multi-tenancy.** Set `group_id` to partition graphs (per project, per tenant, per session). Combine with `domain_type` for narrow scans:
 
 ```python
-field = ContextNode(name="email", domain_type="field", group_id="form_abc")
+endpoint = ContextNode(name="get_user", domain_type="endpoint", group_id="team_abc")
 # later:
-await store.list_nodes(domain_type="field", group_id="form_abc")
+await store.list_nodes(domain_type="endpoint", group_id="team_abc")
 ```
 
 ---
 
 ## Keeping the two layers clean
 
-- **Don't reuse orchestration edge types for domain links.** A field is not "context for" a rule via `HAS_CONTEXT`; it `targets` it via `RELATES`. Mixing them makes `ContextNavigator` and retrieval treat your domain edges as agent wiring.
+- **Don't reuse orchestration edge types for domain links.** An endpoint is not "context for" a monitor via `HAS_CONTEXT`; a monitor `checks` it via `RELATES`. Mixing them makes `ContextNavigator` and retrieval treat your domain edges as agent wiring.
 - **Always set `domain_type`** on domain entities. It is the one filter that cleanly separates "things my app models" from "things the runtime executes" — `list_nodes(domain_type=…)` never returns an `AgentNode`.
-- **Derive, don't duplicate.** If a domain graph mirrors an existing artifact (a rule index, a database table), treat it as a *projection* you rebuild, not a second source of truth.
+- **Derive, don't duplicate.** If a domain graph mirrors an existing artifact (a service registry, a database table), treat it as a *projection* you rebuild, not a second source of truth.
 
 ---
 

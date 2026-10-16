@@ -148,8 +148,8 @@ class Edge(BaseModel):
     def relates(cls, src_id: str, dst_id: str, relation: str, **kw: Any) -> Edge:
         """Create a RELATES edge carrying a consumer-defined `relation` label.
 
-        Use this to model domain knowledge graphs (e.g. a form field that a
-        rule `targets`, or a widget that `presents` a field) without adding
+        Use this to model domain knowledge graphs (e.g. a monitor that `checks`
+        an endpoint, or an SDK method that `wraps` one) without adding
         domain-specific entries to EdgeType.
         """
         return cls(edge_type=EdgeType.RELATES, src_id=src_id, dst_id=dst_id, relation=relation, **kw)
