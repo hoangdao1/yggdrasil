@@ -7,7 +7,7 @@ Node type determines execution behavior in the GraphExecutor.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _uuid() -> str:
@@ -158,7 +158,7 @@ class Node(BaseModel):
             self.invalid_at is None or self.invalid_at > now
         )
 
-    def expire(self) -> "Node":
+    def expire(self) -> Node:
         """Return a copy of this node marked as expired right now."""
         return self.model_copy(update={"invalid_at": _now()})
 
@@ -197,7 +197,7 @@ class AgentNode(Node):
     wait_for_input: str | None = None
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "AgentNode":
+    def _enforce_type(self) -> AgentNode:
         object.__setattr__(self, "node_type", NodeType.AGENT)
         return self
 
@@ -229,7 +229,7 @@ class ToolNode(Node):
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "ToolNode":
+    def _enforce_type(self) -> ToolNode:
         object.__setattr__(self, "node_type", NodeType.TOOL)
         return self
 
@@ -285,7 +285,7 @@ class ContextNode(Node):
     fact_invalid_at:  datetime | None  = None
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "ContextNode":
+    def _enforce_type(self) -> ContextNode:
         object.__setattr__(self, "node_type", NodeType.CONTEXT)
         return self
 
@@ -293,11 +293,9 @@ class ContextNode(Node):
     def is_fact_valid(self) -> bool:
         """True if the underlying fact currently holds in the world."""
         now = _now()
-        if self.fact_valid_at and self.fact_valid_at > now:
-            return False
-        if self.fact_invalid_at and self.fact_invalid_at <= now:
-            return False
-        return True
+        not_yet_valid = self.fact_valid_at is not None and self.fact_valid_at > now
+        no_longer_valid = self.fact_invalid_at is not None and self.fact_invalid_at <= now
+        return not (not_yet_valid or no_longer_valid)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +314,7 @@ class PromptNode(Node):
     variables:  list[str]  = Field(default_factory=list)  # expected variable names
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "PromptNode":
+    def _enforce_type(self) -> PromptNode:
         object.__setattr__(self, "node_type", NodeType.PROMPT)
         return self
 
@@ -342,7 +340,7 @@ class SchemaNode(Node):
     json_schema: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "SchemaNode":
+    def _enforce_type(self) -> SchemaNode:
         object.__setattr__(self, "node_type", NodeType.SCHEMA)
         return self
 
@@ -386,7 +384,7 @@ class GraphNode(Node):
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "GraphNode":
+    def _enforce_type(self) -> GraphNode:
         object.__setattr__(self, "node_type", NodeType.GRAPH)
         return self
 
@@ -415,7 +413,7 @@ class TransformNode(Node):
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "TransformNode":
+    def _enforce_type(self) -> TransformNode:
         object.__setattr__(self, "node_type", NodeType.TRANSFORM)
         return self
 
@@ -488,7 +486,7 @@ class ReasonerNode(Node):
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "ReasonerNode":
+    def _enforce_type(self) -> ReasonerNode:
         object.__setattr__(self, "node_type", NodeType.REASONER)
         return self
 
@@ -508,7 +506,7 @@ class ApprovalNode(Node):
     require_assignment: bool = False
 
     @model_validator(mode="after")
-    def _enforce_type(self) -> "ApprovalNode":
+    def _enforce_type(self) -> ApprovalNode:
         object.__setattr__(self, "node_type", NodeType.APPROVAL)
         return self
 

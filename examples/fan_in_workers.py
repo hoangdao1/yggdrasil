@@ -12,16 +12,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from examples._stub_backend import RuleBasedBackend, SmartReply
 from yggdrasil_lm import (
     Edge,
     GraphExecutor,
     NetworkXGraphStore,
-    TransformNode,
     create_agent,
     create_transform,
 )
-
-from examples._stub_backend import RuleBasedBackend, SmartReply
 
 
 def split_items(data: dict[str, Any]) -> dict[str, Any]:

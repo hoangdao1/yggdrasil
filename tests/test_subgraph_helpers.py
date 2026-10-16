@@ -10,7 +10,6 @@ from yggdrasil_lm.core.nodes import AgentNode, GraphNode
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.testing import StubBackend, end_turn, tool_use
 
-
 # ---------------------------------------------------------------------------
 # Public testing module
 # ---------------------------------------------------------------------------

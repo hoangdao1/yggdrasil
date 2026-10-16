@@ -5,8 +5,8 @@ import pytest
 from yggdrasil_lm import GraphApp, create_agent, create_context, create_prompt, create_tool
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall
 from yggdrasil_lm.observability import explain_run
-from yggdrasil_lm.trace_ui import inspect_trace, print_trace
 from yggdrasil_lm.retrieval import semantic_search
+from yggdrasil_lm.trace_ui import inspect_trace, print_trace
 
 
 class StubBackend(LLMBackend):

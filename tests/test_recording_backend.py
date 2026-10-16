@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
 from yggdrasil_lm.app import GraphApp
-from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall, ToolResult
+from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse
 from yggdrasil_lm.testing import (
     RecordingBackend,
     StubBackend,

@@ -7,6 +7,6 @@ typecheck:
 	mypy
 
 lint:
-	ruff check yggdrasil_lm
+	ruff check .
 
 check: lint typecheck test

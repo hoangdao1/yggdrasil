@@ -24,7 +24,6 @@ except ImportError as _e:
 from yggdrasil_lm.core.nodes import AnyNode, NodeType
 from yggdrasil_lm.core.store import GraphStore
 
-
 EMBED_MODEL = os.getenv("EMBED_MODEL", "all-MiniLM-L6-v2")
 
 

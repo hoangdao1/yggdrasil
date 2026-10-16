@@ -23,4 +23,4 @@ from __future__ import annotations
 
 from yggdrasil_lm.viz.server import VizServer, live_trace, serve_trace
 
-__all__ = ["serve_trace", "live_trace", "VizServer"]
+__all__ = ["VizServer", "live_trace", "serve_trace"]

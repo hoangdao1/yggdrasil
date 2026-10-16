@@ -64,7 +64,7 @@ async def test_list_edges_filters_by_relation(domain_graph):
 
 
 async def test_get_edges_filters_by_relation(domain_graph):
-    store, field, widget, rule = domain_graph
+    store, field, widget, _rule = domain_graph
     incoming = await store.get_edges(field.node_id, direction="in")
     assert len(incoming) == 2  # both relation edges point at the field
     presents = await store.get_edges(field.node_id, direction="in", relation="presents")

@@ -24,19 +24,19 @@ replay deterministically, see ``RecordingBackend`` below.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall, ToolResult
 
-
 __all__ = [
-    "StubBackend",
     "RecordingBackend",
+    "StubBackend",
     "end_turn",
-    "tool_use",
     "max_tokens_truncated",
+    "tool_use",
     "unparsed_tool_call",
 ]
 
@@ -136,7 +136,7 @@ class StubBackend(LLMBackend):
         return list(messages) + continuation + tool_entries
 
     @classmethod
-    def from_recording(cls, path: str | Path) -> "StubBackend":
+    def from_recording(cls, path: str | Path) -> StubBackend:
         """Load a fixture written by ``RecordingBackend`` and replay it in order.
 
         The recorded ``LLMResponse`` objects are reconstructed (without the

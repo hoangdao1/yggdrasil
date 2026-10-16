@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import yggdrasil_lm.observability as obs
 import yggdrasil_lm.trace_ui as tui
-import yggdrasil_lm.viz as viz
-
+from yggdrasil_lm import viz
 
 # ---------------------------------------------------------------------------
 # observability — data API only
@@ -77,7 +76,7 @@ def test_canonical_import_observability():
 
 
 def test_canonical_import_viz():
-    from yggdrasil_lm.viz import serve_trace, live_trace
+    from yggdrasil_lm.viz import live_trace, serve_trace
     assert callable(serve_trace)
     assert callable(live_trace)
 

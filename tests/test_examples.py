@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
+from examples._stub_backend import SequenceBackend, end_turn
 from examples.approval_workflow import run_demo as run_approval_workflow
 from examples.builder_echo import run_demo as run_builder_echo
 from examples.deterministic_routing import run_demo as run_deterministic_routing
+from examples.neurosymbolic_pipeline import main as run_neurosymbolic
 from examples.parallel_workers import run_demo as run_parallel_workers
 from examples.research_pipeline import run_pipeline
-from examples.neurosymbolic_pipeline import main as run_neurosymbolic
-from examples._stub_backend import SequenceBackend, end_turn
 
 
 @pytest.mark.asyncio

@@ -129,8 +129,8 @@ def build_query(text: str, *images: ImageBlock) -> QueryContent:
 __all__ = [
     "ImageBlock",
     "QueryContent",
+    "build_query",
+    "image_from_base64",
     "image_from_file",
     "image_from_url",
-    "image_from_base64",
-    "build_query",
 ]

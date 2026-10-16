@@ -26,17 +26,18 @@ import os
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolResult, default_backend
 from yggdrasil_lm.core.executor import (
+    _ROUTER_SYSTEM,
+    _ROUTER_TEMPLATE,
     AgentComposer,
     ExecutionContext,
     GraphExecutor,
     RoutingDecision,
-    _ROUTER_SYSTEM,
-    _ROUTER_TEMPLATE,
     _query_text,
     _summarise,
 )
@@ -322,7 +323,7 @@ def _build_mcp_server(
                     )
                     success = True
                     return {"content": [{"type": "text", "text": _format_tool_content(result)}]}
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — a tool failure goes back to the model
                     result = {"error": str(exc), "tool": tool_node.name}
                     return {
                         "isError": True,
@@ -334,8 +335,8 @@ def _build_mcp_server(
                         on_tool_result(tool_node, args, result, success, duration_ms)
             return handler
 
-        handler = _make_handler(tn, fn, is_async)
-        decorated = cc_tool(tn.name, tn.description, param_types)(handler)
+        handler_fn = _make_handler(tn, fn, is_async)
+        decorated = cc_tool(tn.name, tn.description, param_types)(handler_fn)
         sdk_tools.append(decorated)
 
     if not sdk_tools:
@@ -495,7 +496,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                 reason=str(data.get("reason", "")),
                 confidence=float(data.get("confidence", 0.5)),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — any CLI/parse failure falls back to the first agent
             return RoutingDecision(
                 agent_id=candidates[0].node_id,
                 reason=f"Fallback: CLI routing failed ({type(exc).__name__}).",

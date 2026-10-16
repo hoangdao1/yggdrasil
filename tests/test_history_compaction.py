@@ -6,8 +6,10 @@ the head (task) + most-recent turns full.
 from __future__ import annotations
 
 from yggdrasil_lm.core.executor import (
-    _compact_history, _clip_for_history, _HISTORY_ELIDE_MARK,
-    _HISTORY_HEAD_KEEP, _HISTORY_RECENT_KEEP, _HISTORY_ELIDE_CHARS,
+    _HISTORY_ELIDE_CHARS,
+    _HISTORY_ELIDE_MARK,
+    _clip_for_history,
+    _compact_history,
 )
 
 BIG = "X" * 5000

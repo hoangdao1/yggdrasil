@@ -165,7 +165,7 @@ async def test_item_timing_recorded(batch, agent):
 @pytest.mark.asyncio
 async def test_progress_callback_called_per_item(batch, agent):
     calls: list[float] = []
-    run = await batch.run(
+    await batch.run(
         agent.node_id,
         ["a", "b", "c"],
         query_fn=lambda x: x,
@@ -183,7 +183,7 @@ async def test_async_progress_callback(batch, agent):
     async def cb(r: BatchRun) -> None:
         calls.append(r.completed + r.failed)
 
-    run = await batch.run(agent.node_id, ["a", "b"], query_fn=lambda x: x, on_progress=cb)
+    await batch.run(agent.node_id, ["a", "b"], query_fn=lambda x: x, on_progress=cb)
     assert len(calls) == 2
 
 
@@ -291,7 +291,6 @@ async def test_resume_unknown_run_id_raises(store, agent):
 @pytest.mark.asyncio
 async def test_reduce_fn_called_with_successful_outputs(batch, agent):
     items = ["a", "b", "FAIL:c"]
-    combined: list[Any] = []
 
     run = await batch.run(
         agent.node_id,

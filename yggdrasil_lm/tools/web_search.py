@@ -24,7 +24,7 @@ async def search(input: dict[str, Any]) -> str:
             resp.raise_for_status()
             results = _parse_ddg_html(resp.text, max_results=input.get("num_results", 5))
             return "\n\n".join(results) or "No results found."
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — the error text is the tool's result
         return f"Search error: {exc}"
 
 
@@ -32,8 +32,8 @@ def _parse_ddg_html(html: str, max_results: int = 5) -> list[str]:
     """Minimal regex-based parser for DuckDuckGo Lite results."""
     import re
 
-    titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]+>([^<]+)<', html, re.S)
-    snippets = re.findall(r'class="result__snippet"[^>]*>([^<]+)<', html, re.S)
+    titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]+>([^<]+)<', html, re.DOTALL)
+    snippets = re.findall(r'class="result__snippet"[^>]*>([^<]+)<', html, re.DOTALL)
     return [
         f"**{title.strip()}**\n{snippet.strip()}"
         for i, (title, snippet) in enumerate(zip(titles, snippets))

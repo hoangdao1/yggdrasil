@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
-from yggdrasil_lm import Edge, GraphExecutor, NetworkXGraphStore, create_agent
-
 from examples._stub_backend import RuleBasedBackend, SmartReply
+from yggdrasil_lm import Edge, GraphExecutor, NetworkXGraphStore, create_agent
 
 
 async def run_demo() -> None:

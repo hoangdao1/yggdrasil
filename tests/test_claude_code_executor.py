@@ -4,6 +4,7 @@ All claude_agent_sdk calls are mocked — no Claude Code CLI required.
 """
 
 from __future__ import annotations
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,15 +18,14 @@ from yggdrasil_lm import (
     ToolNode,
 )
 from yggdrasil_lm.backends.claude_code import (
+    SESSION_OPTION_NAMES,
     ClaudeCodeAgentError,
     ClaudeCodeExecutor,
     _AgentRunResult,
-    SESSION_OPTION_NAMES,
     _build_mcp_server,
     _json_type_to_python,
     _sdk_tool_schema,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -23,7 +23,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Normalised types shared across backends
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ _UNPARSED_TOOL_CALL_MARKERS = _re.compile(
 )
 
 
-def looks_like_unparsed_tool_call(*channels: "str | None") -> bool:
+def looks_like_unparsed_tool_call(*channels: str | None) -> bool:
     """Whether ANY response channel carries a tool-call block the API never parsed.
 
     Pass every channel the model can write into (`content` and `reasoning_content`) —
@@ -119,7 +118,7 @@ _HERMES_BLOCK_RE = _re.compile(r"<\s*tool_call\s*>(.*?)(?:<\s*/\s*tool_call\s*>|
                                _re.IGNORECASE | _re.DOTALL)
 
 
-def parse_text_tool_calls(*channels: "str | None") -> list[ToolCall]:
+def parse_text_tool_calls(*channels: str | None) -> list[ToolCall]:
     """Recover structured ToolCalls from tool-call markup the API layer left as text.
 
     Returns [] when nothing parseable is present — the caller then falls back to
@@ -136,7 +135,7 @@ def parse_text_tool_calls(*channels: "str | None") -> list[ToolCall]:
                 continue
             try:
                 obj = json.loads(stripped)
-            except Exception:  # noqa: BLE001 — not JSON → try the other dialect
+            except ValueError:  # not JSON → try the other dialect
                 continue
             name = obj.get("name") or obj.get("function")
             args = obj.get("arguments")
@@ -171,7 +170,7 @@ def parse_text_tool_calls(*channels: "str | None") -> list[ToolCall]:
 _MANGLED_KEY_MARKERS = ("</parameter", "<parameter=", "</function", "<function=")
 
 
-def has_mangled_tool_args(tool_calls: "list[ToolCall]") -> bool:
+def has_mangled_tool_args(tool_calls: list[ToolCall]) -> bool:
     """True when any call's argument KEYS carry tool-call markup — a server-side
     mis-parse, not arguments the model meant to send."""
     for call in tool_calls:

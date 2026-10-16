@@ -46,22 +46,24 @@ class Neo4jGraphStore(GraphStore):
         data["embedding_json"] = json.dumps(data.pop("embedding", None) or [])
         data["attributes_json"] = json.dumps(data.pop("attributes", {}))
 
-        cypher = """
-        MERGE (n:Node {node_id: $node_id})
+        label = node.node_type.upper()
+        cypher = f"""
+        MERGE (n:Node {{node_id: $node_id}})
         SET n += $props
-        SET n:%(label)s
-        """ % {"label": node.node_type.upper()}
+        SET n:{label}
+        """
 
         async with self._driver.session(database=self._db) as session:
             await session.run(cypher, node_id=node.node_id, props=data)
 
     async def upsert_edge(self, edge: Edge) -> None:
-        cypher = """
-        MATCH (src:Node {node_id: $src_id})
-        MATCH (dst:Node {node_id: $dst_id})
-        MERGE (src)-[r:%(rel)s {edge_id: $edge_id}]->(dst)
+        rel = edge.edge_type.upper().replace("-", "_")
+        cypher = f"""
+        MATCH (src:Node {{node_id: $src_id}})
+        MATCH (dst:Node {{node_id: $dst_id}})
+        MERGE (src)-[r:{rel} {{edge_id: $edge_id}}]->(dst)
         SET r += $props
-        """ % {"rel": edge.edge_type.upper().replace("-", "_")}
+        """
 
         props = edge.model_dump(mode="json")
         props["attributes_json"] = json.dumps(props.pop("attributes", {}))

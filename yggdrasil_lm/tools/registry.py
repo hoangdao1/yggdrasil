@@ -19,14 +19,15 @@ Usage:
 from __future__ import annotations
 
 import importlib
-from collections.abc import ItemsView
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable, ItemsView
+from typing import Any, TypeVar
 
-from yggdrasil_lm.tools.code_exec import run_python
 from yggdrasil_lm.tools.echo import echo
-from yggdrasil_lm.tools.kg_query import facts as kg_facts
-from yggdrasil_lm.tools.kg_query import neighbors as kg_neighbors
-from yggdrasil_lm.tools.kg_query import reachable as kg_reachable
+from yggdrasil_lm.tools.kg_query import (
+    facts as kg_facts,
+    neighbors as kg_neighbors,
+    reachable as kg_reachable,
+)
 from yggdrasil_lm.tools.web_search import search as web_search
 
 _F = TypeVar("_F", bound=Callable[..., Any])

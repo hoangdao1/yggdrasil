@@ -17,7 +17,6 @@ import asyncio
 from yggdrasil_lm.app import GraphApp
 from yggdrasil_lm.media import build_query, image_from_url
 
-
 SAMPLE_IMAGE_URL = (
     "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/"
     "PNG_transparency_demonstration_1.png/280px-PNG_transparency_demonstration_1.png"

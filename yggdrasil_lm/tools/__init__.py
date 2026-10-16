@@ -11,6 +11,6 @@ __all__ = [
     "ToolRegistry",
     "default_registry",
     "echo",
-    "search",
     "run_python",
+    "search",
 ]

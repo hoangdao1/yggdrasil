@@ -17,6 +17,7 @@ Execution strategies:
 from __future__ import annotations
 
 import asyncio
+import functools
 import graphlib
 import inspect
 import json
@@ -26,16 +27,17 @@ import re
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Literal, NamedTuple
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, NamedTuple
 
 from yggdrasil_lm.backends.llm import LLMBackend, ToolResult, default_backend
 from yggdrasil_lm.core.edges import Edge, EdgeType
 from yggdrasil_lm.core.nodes import (
     AgentNode,
-    ApprovalNode,
     AnyNode,
+    ApprovalNode,
     ConstraintRule,
     ContextNode,
     DecisionRule,
@@ -51,7 +53,6 @@ from yggdrasil_lm.core.nodes import (
     TransformNode,
 )
 from yggdrasil_lm.core.store import GraphStore, _cosine, _normalize
-
 
 # ---------------------------------------------------------------------------
 # TraceEvent — structured, typed execution event
@@ -192,9 +193,7 @@ def looks_like_narration_only(text: str, reasoning: str = "") -> bool:
         return not (reasoning or "").strip()
     if len(body) > 400:
         return False                      # substantive output, not a lead-in
-    if body.endswith(":") and _NARRATION_LEAD_IN.search(body):
-        return True
-    return False
+    return body.endswith(":") and _NARRATION_LEAD_IN.search(body) is not None
 
 
 _TOOL_CALL_CORRECTION_PROMPT = (
@@ -382,7 +381,7 @@ class ApprovalTask:
     waiting_for: str | None = None
     due_at: datetime | None = None
     escalation_target: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     resolved_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -489,7 +488,7 @@ class ExecutionContext:
         }
 
     @classmethod
-    def from_snapshot(cls, data: dict[str, Any]) -> "ExecutionContext":
+    def from_snapshot(cls, data: dict[str, Any]) -> ExecutionContext:
         """Restore an execution context from snapshot data."""
         raw_state = data.get("state", {})
         pending_pause = raw_state.get("pending_pause")
@@ -523,7 +522,7 @@ class ExecutionContext:
                     ),
                     escalation_target=item.get("escalation_target"),
                     created_at=datetime.fromisoformat(item["created_at"])
-                    if item.get("created_at") else datetime.now(timezone.utc),
+                    if item.get("created_at") else datetime.now(UTC),
                     resolved_at=(
                         datetime.fromisoformat(item["resolved_at"])
                         if item.get("resolved_at") else None
@@ -849,7 +848,7 @@ class ContextNavigator:
         return overlap * self.tag_weight
 
     def _recency_bonus(self, ctx: ContextNode) -> float:
-        age_s = (datetime.now(timezone.utc) - ctx.valid_at).total_seconds()
+        age_s = (datetime.now(UTC) - ctx.valid_at).total_seconds()
         if age_s <= 3600:
             return self.recency_weight
         if age_s <= 86400:
@@ -1250,7 +1249,7 @@ class GraphExecutor:
             session_id=ctx.session_id,
             node_id=node_id,
             node_name=node_name,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             payload=payload,
             event_id=event_id or str(uuid.uuid4()),
             parent_event_id=parent_event_id,
@@ -1358,8 +1357,8 @@ class GraphExecutor:
                     if isinstance(paused_node, AgentNode):
                         paused_node.pause_before = False
                         await self.store.upsert_node(paused_node)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 — best effort; worst case the node re-pauses
+                    _log.debug("could not clear pause_before on %s", pause.node_id, exc_info=True)
         return await self.run(
             entry_node_id,
             ctx.query,
@@ -1382,7 +1381,7 @@ class GraphExecutor:
             seconds_since: float | None = None
             is_stale = False
         else:
-            current = now or datetime.now(timezone.utc)
+            current = now or datetime.now(UTC)
             seconds_since = (current - last_event_at).total_seconds()
             is_stale = seconds_since > stale_after_seconds
 
@@ -1419,6 +1418,7 @@ class GraphExecutor:
     ) -> Any:
         """Run an agent over a list of items with concurrency control."""
         import warnings
+
         from yggdrasil_lm.batch import BatchExecutor
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
@@ -2408,16 +2408,16 @@ class GraphExecutor:
         for _iteration in range(node.max_iterations):
             iterations += 1
             policy = node.execution_policy
-            try:
-                last_response = await self._call_with_retry(
-                    lambda: self._chat_once(node, system, messages, tool_defs, max_tokens=cur_max_tokens),
-                    ctx,
-                    node=node,
-                    policy=policy,
-                    parent_event_id=agent_event_id,
-                )
-            except Exception:
-                raise
+            # Bind this turn's messages and token budget; the loop reassigns both.
+            last_response = await self._call_with_retry(
+                functools.partial(
+                    self._chat_once, node, system, messages, tool_defs, max_tokens=cur_max_tokens
+                ),
+                ctx,
+                node=node,
+                policy=policy,
+                parent_event_id=agent_event_id,
+            )
 
             # A turn that emitted tool calls is actionable regardless of whether it
             # also hit the token limit: run the tools and continue the conversation.
@@ -2592,7 +2592,7 @@ class GraphExecutor:
             if task is not None:
                 task.status = "approved" if approved else "rejected"
                 task.assigned_to = assigned_to or task.assigned_to
-                task.resolved_at = datetime.now(timezone.utc)
+                task.resolved_at = datetime.now(UTC)
             return {
                 "approved": approved,
                 "next_node_id": node.approved_target_id if approved else node.rejected_target_id,
@@ -2608,7 +2608,7 @@ class GraphExecutor:
             assigned_to=assigned_to,
             waiting_for=node.instructions or node.name,
             due_at=(
-                datetime.now(timezone.utc) + timedelta(seconds=node.sla_seconds)
+                datetime.now(UTC) + timedelta(seconds=node.sla_seconds)
                 if node.sla_seconds else None
             ),
             escalation_target=node.escalation_target or None,
@@ -2713,7 +2713,7 @@ class GraphExecutor:
                     await self._materialise_output(tool_node, raw, ctx)
                     content = raw if isinstance(raw, str) else str(raw)
                     success = True
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — a tool failure goes back to the model
                     content = f"Tool error: {exc}"
                     success = False
 
@@ -2784,9 +2784,8 @@ class GraphExecutor:
         runtime_payload = dict(payload) if isinstance(payload, dict) else {"input": payload}
         await self._validate_node_schemas(node, input_payload=payload, ctx=ctx)
         idempotency_key = self._idempotency_key(node, payload)
-        if idempotency_key:
-            if idempotency_key in ctx.state.idempotency_cache:
-                return ctx.state.idempotency_cache[idempotency_key]
+        if idempotency_key and idempotency_key in ctx.state.idempotency_cache:
+            return ctx.state.idempotency_cache[idempotency_key]
 
         injected = self._callable_injection_kwargs(fn, ctx)
 
@@ -3042,7 +3041,7 @@ class GraphExecutor:
                 if policy.timeout_seconds:
                     return await asyncio.wait_for(fn(), timeout=policy.timeout_seconds)
                 return await fn()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — retried per policy, then re-raised
                 last_exc = exc
                 if attempt >= attempts:
                     break
@@ -3081,8 +3080,8 @@ class GraphExecutor:
         ctx: ExecutionContext,
     ) -> ContextNode:
         """Write execution output back into the graph as a ContextNode."""
-        from yggdrasil_lm.core.nodes import ContextNode
         from yggdrasil_lm.core.edges import Edge
+        from yggdrasil_lm.core.nodes import ContextNode
 
         content = output if isinstance(output, str) else str(output)
         ctx_node = ContextNode(
@@ -3214,7 +3213,7 @@ class GraphExecutor:
             )
             data = json.loads(response.text.strip())
             return str(data.get("intent", "default"))
-        except Exception:
+        except Exception:  # noqa: BLE001 — intent inference is advisory; fall back to default
             return "default"
 
     def _infer_intent_keywords(self, text: str, node: AgentNode) -> str:
@@ -3261,7 +3260,7 @@ class GraphExecutor:
                 str(data.get("reason", "")),
                 float(data.get("confidence", 0.5)),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — any LLM/parse failure falls back to the first agent
             return RoutingDecision(
                 candidates[0].node_id,
                 "Fallback: router response could not be parsed.",
@@ -3329,7 +3328,6 @@ def print_trace(ctx: ExecutionContext | list[TraceEvent], *, width: int = 72) ->
     print(f"\nSession {session_id}  {query!r}")
     print(sep)
 
-    by_id: dict[str, TraceEvent] = {e.event_id: e for e in events}
     children: dict[str | None, list[TraceEvent]] = {}
     for e in events:
         children.setdefault(e.parent_event_id, []).append(e)

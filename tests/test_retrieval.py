@@ -60,7 +60,7 @@ async def _build_retrieval_graph(store: NetworkXGraphStore):
 
 @pytest.mark.asyncio
 async def test_semantic_search_returns_agents(store):
-    agent_a, agent_b, tool_a, tool_b = await _build_retrieval_graph(store)
+    agent_a, _agent_b, _tool_a, _tool_b = await _build_retrieval_graph(store)
 
     # Query close to code/python domain
     query_vec = _vec(1.05)
@@ -75,7 +75,7 @@ async def test_semantic_search_returns_agents(store):
 @pytest.mark.asyncio
 async def test_semantic_search_infers_agent_via_tool(store):
     """Agent is found via tool embedding match, not direct agent match."""
-    agent_a, agent_b, tool_a, tool_b = await _build_retrieval_graph(store)
+    _agent_a, agent_b, _tool_a, _tool_b = await _build_retrieval_graph(store)
 
     # Query extremely close to tool_b (research domain)
     query_vec = _vec(2.09)
@@ -111,7 +111,7 @@ async def test_semantic_search_no_embeddings(store):
 @pytest.mark.asyncio
 async def test_semantic_search_top_k_respected(store):
     """top_k limits the number of results."""
-    agent_a, agent_b, *_ = await _build_retrieval_graph(store)
+    _agent_a, _agent_b, *_ = await _build_retrieval_graph(store)
     results = await semantic_search(store, _vec(1.5), top_k=1)
     assert len(results) == 1
 

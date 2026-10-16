@@ -41,18 +41,16 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import IO, Any, Literal
+from typing import Any, Literal
 
-from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, _query_text, print_trace  # noqa: F401
+from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, _query_text, print_trace
 
 __all__ = ["inspect_trace", "print_trace"]
 
 try:
     from rich import box
-    from rich.columns import Columns
     from rich.console import Console
     from rich.panel import Panel
-    from rich.rule import Rule
     from rich.syntax import Syntax
     from rich.table import Table
     from rich.text import Text
@@ -358,7 +356,7 @@ def _render_event(
 
             label = Text()
             label.append("  AGENT END  ", style=_AGENT_COLOR)
-            label.append(f"intent=", style=_DIM)
+            label.append("intent=", style=_DIM)
             label.append(intent, style="bold magenta")
             if iters > 1:
                 label.append(f"  iters={iters}", style=_DIM)

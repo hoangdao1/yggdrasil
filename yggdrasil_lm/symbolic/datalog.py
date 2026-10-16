@@ -39,9 +39,9 @@ lists, or as dicts ``{"predicate": "parent", "args": [...]}`` — see
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -260,7 +260,7 @@ def _parse_body_literal(text: str) -> BodyLiteral:
             right = text[idx + len(op):].strip()
             if left and right and "(" not in left and "(" not in right:
                 return Comparison(op=op, left=_parse_term(left), right=_parse_term(right))
-    if text.startswith("not ") or text.startswith("not(") or text.startswith("!"):
+    if text.startswith(("not ", "not(", "!")):
         rest = text[1:] if text.startswith("!") else text[4:]
         return _parse_atom(rest, negated=True)
     return _parse_atom(text)
@@ -498,7 +498,7 @@ class Program:
         self._strata: list[set[str]] = _stratify(self._derivation_rules, self._intensional)
 
     @classmethod
-    def parse(cls, text: str) -> "Program":
+    def parse(cls, text: str) -> Program:
         """Compile a program from the string DSL."""
         return cls(parse_program(text))
 
@@ -627,8 +627,8 @@ def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
     # Re-verify (a converged-but-violating assignment also means a neg cycle).
     for rule in rules:
         for lit in rule.body:
-            if isinstance(lit, Atom) and lit.negated and lit.predicate in intensional:
-                if stratum[lit.predicate] >= stratum[rule.head.predicate]:
+            if (isinstance(lit, Atom) and lit.negated and lit.predicate in intensional
+                    and stratum[lit.predicate] >= stratum[rule.head.predicate]):
                     raise StratificationError(
                         f"program cannot be stratified: negated {lit.predicate!r} "
                         f"is recursively derived with {rule.head.predicate!r}"

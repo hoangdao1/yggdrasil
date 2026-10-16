@@ -28,7 +28,7 @@ def test_core_import_does_not_load_the_sdk_or_mcp() -> None:
 def test_every_public_name_still_resolves() -> None:
     for name in yggdrasil_lm.__all__:
         assert getattr(yggdrasil_lm, name) is not None, name
-    from yggdrasil_lm import ClaudeCodeExecutor, END_NODE, GraphExecutor  # noqa: F401
+    from yggdrasil_lm import END_NODE, ClaudeCodeExecutor, GraphExecutor  # noqa: F401
 
 
 def test_an_unknown_name_is_an_attribute_error() -> None:

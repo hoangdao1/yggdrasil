@@ -15,7 +15,6 @@ from yggdrasil_lm.app import GraphApp
 from yggdrasil_lm.backends.llm import OpenAIBackend
 from yggdrasil_lm.testing import StubBackend, end_turn, max_tokens_truncated
 
-
 # ---------------------------------------------------------------------------
 # OpenAI backend: finish_reason mapping + reasoning capture
 # ---------------------------------------------------------------------------
@@ -325,11 +324,11 @@ def test_detector_accepts_multiple_channels():
 
 # ── recovering the call outright (S8) + rejecting server-mangled args (S7) ───
 
-from yggdrasil_lm.backends.llm import (  # noqa: E402
+from yggdrasil_lm.backends.llm import (
+    ToolCall as _TC,
     has_mangled_tool_args,
     parse_text_tool_calls,
 )
-from yggdrasil_lm.backends.llm import ToolCall as _TC  # noqa: E402
 
 
 def test_parses_the_blended_hybrid():
@@ -425,7 +424,7 @@ async def test_mangled_call_is_not_executed_with_lost_arguments():
 # like "Now let me resolve all the input field contexts for these targets:". The model
 # was announcing its next action; the loop accepted it as the answer.
 
-from yggdrasil_lm.core.executor import looks_like_narration_only  # noqa: E402
+from yggdrasil_lm.core.executor import looks_like_narration_only
 
 
 @pytest.mark.parametrize("text", [
@@ -500,7 +499,7 @@ async def test_persistent_narration_terminates_bounded():
 # they are absent, however confident its closing message sounds. Declared generically
 # as node.attributes["completion_paths"]; the engine only checks existence.
 
-from yggdrasil_lm.core.executor import missing_completion_paths  # noqa: E402
+from yggdrasil_lm.core.executor import missing_completion_paths
 
 
 def test_missing_paths_are_reported(tmp_path):
@@ -508,27 +507,24 @@ def test_missing_paths_are_reported(tmp_path):
     present.write_text("[]")
     absent = tmp_path / "missing.json"
 
-    class N:
-        attributes = {"completion_paths": [str(present), str(absent)]}
+    node = SimpleNamespace(attributes={"completion_paths": [str(present), str(absent)]})
 
-    assert missing_completion_paths(N()) == [str(absent)]
+    assert missing_completion_paths(node) == [str(absent)]
 
 
 def test_all_present_means_nothing_missing(tmp_path):
     f = tmp_path / "a.json"
     f.write_text("[]")
 
-    class N:
-        attributes = {"completion_paths": [str(f)]}
+    node = SimpleNamespace(attributes={"completion_paths": [str(f)]})
 
-    assert missing_completion_paths(N()) == []
+    assert missing_completion_paths(node) == []
 
 
 def test_a_single_path_may_be_given_as_a_string(tmp_path):
-    class N:
-        attributes = {"completion_paths": str(tmp_path / "nope.json")}
+    node = SimpleNamespace(attributes={"completion_paths": str(tmp_path / "nope.json")})
 
-    assert missing_completion_paths(N()) == [str(tmp_path / "nope.json")]
+    assert missing_completion_paths(node) == [str(tmp_path / "nope.json")]
 
 
 @pytest.mark.parametrize("attrs", [{}, {"completion_paths": []},

@@ -13,20 +13,14 @@ Usage (standalone):
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import time
-from typing import Any
-
-from yggdrasil_lm import AgentNode, ContextNode, Edge, NetworkXGraphStore, ToolNode
-from yggdrasil_lm.core.edges import EdgeType
-from yggdrasil_lm.core.executor import AgentComposer, ExecutionContext, GraphExecutor
-from yggdrasil_lm.core.nodes import PromptNode
-from yggdrasil_lm.tools.registry import default_registry
 
 from benchmarks.metrics import RunMetrics
 from benchmarks.tasks import BenchmarkTask
-
+from yggdrasil_lm import AgentNode, Edge, NetworkXGraphStore, ToolNode
+from yggdrasil_lm.core.executor import ExecutionContext, GraphExecutor
+from yggdrasil_lm.tools.registry import default_registry
 
 # ---------------------------------------------------------------------------
 # Graph builder
@@ -150,7 +144,7 @@ def _extract_metrics_from_ctx(
 
     # Final output: last agent's text output
     final_output = ""
-    for node_id, out in ctx.outputs.items():
+    for out in ctx.outputs.values():
         if isinstance(out, dict) and "text" in out:
             final_output = out["text"]
 
@@ -158,7 +152,7 @@ def _extract_metrics_from_ctx(
     if not error:
         try:
             passed = task.eval_fn(final_output)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
             pass
 
     return RunMetrics(
@@ -238,12 +232,7 @@ async def run_graph_agent(
     # Build graph
     entry_node_id = await build_graph_for_task(task, store, model)
 
-    # Measure system_prompt_chars before running (compose first agent)
-    entry_node = await store.get_node(entry_node_id)
-    composer = AgentComposer(store)
-    composed = await composer.compose(entry_node, query=task.query)
-    system_prompt = composed.build_system_prompt()
-    # For multi-agent, accumulate all agents' prompts as an approximation
+    # Measure system_prompt_chars: all agents' prompts, as an approximation
     total_sysprompt_chars = sum(len(r.system_prompt) for r in task.agent_roles)
 
     # Run
@@ -256,7 +245,7 @@ async def run_graph_agent(
             query=task.query,
             strategy="sequential",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any run failure is recorded in the metrics
         error = str(exc)[:300]
     wall_ms = (time.perf_counter() - t0) * 1000
 

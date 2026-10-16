@@ -7,7 +7,7 @@ Multiple edge types can exist between the same two nodes (multi-relational graph
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _uuid() -> str:
@@ -116,36 +116,36 @@ class Edge(BaseModel):
             self.invalid_at is None or self.invalid_at > now
         )
 
-    def expire(self) -> "Edge":
+    def expire(self) -> Edge:
         """Return a copy of this edge marked as expired right now."""
         return self.model_copy(update={"invalid_at": _now()})
 
     @classmethod
-    def has_tool(cls, src_id: str, dst_id: str, **kw: Any) -> "Edge":
+    def has_tool(cls, src_id: str, dst_id: str, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.HAS_TOOL, src_id=src_id, dst_id=dst_id, **kw)
 
     @classmethod
-    def has_context(cls, src_id: str, dst_id: str, weight: float = 1.0, **kw: Any) -> "Edge":
+    def has_context(cls, src_id: str, dst_id: str, weight: float = 1.0, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.HAS_CONTEXT, src_id=src_id, dst_id=dst_id, weight=weight, **kw)
 
     @classmethod
-    def has_prompt(cls, src_id: str, dst_id: str, **kw: Any) -> "Edge":
+    def has_prompt(cls, src_id: str, dst_id: str, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.HAS_PROMPT, src_id=src_id, dst_id=dst_id, **kw)
 
     @classmethod
-    def delegates_to(cls, src_id: str, dst_id: str, **kw: Any) -> "Edge":
+    def delegates_to(cls, src_id: str, dst_id: str, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.DELEGATES_TO, src_id=src_id, dst_id=dst_id, **kw)
 
     @classmethod
-    def produces(cls, src_id: str, dst_id: str, **kw: Any) -> "Edge":
+    def produces(cls, src_id: str, dst_id: str, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.PRODUCES, src_id=src_id, dst_id=dst_id, **kw)
 
     @classmethod
-    def similar_to(cls, src_id: str, dst_id: str, weight: float = 1.0, **kw: Any) -> "Edge":
+    def similar_to(cls, src_id: str, dst_id: str, weight: float = 1.0, **kw: Any) -> Edge:
         return cls(edge_type=EdgeType.SIMILAR_TO, src_id=src_id, dst_id=dst_id, weight=weight, **kw)
 
     @classmethod
-    def relates(cls, src_id: str, dst_id: str, relation: str, **kw: Any) -> "Edge":
+    def relates(cls, src_id: str, dst_id: str, relation: str, **kw: Any) -> Edge:
         """Create a RELATES edge carrying a consumer-defined `relation` label.
 
         Use this to model domain knowledge graphs (e.g. a form field that a

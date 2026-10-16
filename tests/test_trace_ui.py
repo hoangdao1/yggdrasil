@@ -6,21 +6,19 @@ and assert on specific rendered strings rather than just "no exception".
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
 
 from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _event(
@@ -59,6 +57,7 @@ def _hop_event(hop_num: int, node_name: str = "Agent", *, node_id: str = "node-1
 def _capture(events: list[TraceEvent], *, verbose: bool = True) -> str:
     """Render events to a string via Console(record=True)."""
     from rich.console import Console
+
     from yggdrasil_lm.trace_ui import _render_session
 
     console = Console(record=True, no_color=True, width=120)
@@ -234,9 +233,11 @@ def test_subgraph_enter_exit_rendered():
 
 def test_raw_event_list_input():
     """inspect_trace accepts list[TraceEvent] directly, not only ExecutionContext."""
-    from yggdrasil_lm.trace_ui import inspect_trace
-    from rich.console import Console
     import io
+
+    from rich.console import Console
+
+    from yggdrasil_lm.trace_ui import inspect_trace
 
     events = [_hop_event(1)]
     # Should not raise even when passed a raw list
@@ -281,15 +282,17 @@ def test_file_handle_is_closed_even_if_render_raises(tmp_path):
     out_file = tmp_path / "trace.html"
     events = [_hop_event(1)]
 
-    with patch("yggdrasil_lm.trace_ui._render_session", side_effect=RuntimeError("boom")):
-        with pytest.raises(RuntimeError, match="boom"):
-            inspect_trace(events, file=str(out_file), format="html")
+    with (
+        patch("yggdrasil_lm.trace_ui._render_session", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        inspect_trace(events, file=str(out_file), format="html")
 
     # File was opened inside a `with` block so it must be closed now.
     # We can verify by opening it again without error.
     out_file.touch()  # ensure file exists for open check
-    fh = open(str(out_file))
-    fh.close()  # would raise if OS-level handle was leaked (not applicable on all OS, but proves no exception)
+    with open(out_file):  # would raise if the OS-level handle leaked (not on all OSes)
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -298,13 +301,14 @@ def test_file_handle_is_closed_even_if_render_raises(tmp_path):
 
 def test_fallback_without_rich(capsys):
     """When _RICH is False, inspect_trace falls back to print_trace."""
-    from yggdrasil_lm.core.executor import ExecutionContext
     import yggdrasil_lm.trace_ui as trace_ui_mod
 
     ctx = ExecutionContext(query="test", session_id="sess-fallback")
     ctx.trace = [_event("hop", session_id="sess-fallback", payload={"hop": 1, "summary": "fallback test"})]
 
-    with patch.object(trace_ui_mod, "_RICH", False):
-        with patch("yggdrasil_lm.trace_ui.print_trace") as mock_print:
-            trace_ui_mod.inspect_trace(ctx)
-            mock_print.assert_called_once_with(ctx)
+    with (
+        patch.object(trace_ui_mod, "_RICH", False),
+        patch("yggdrasil_lm.trace_ui.print_trace") as mock_print,
+    ):
+        trace_ui_mod.inspect_trace(ctx)
+        mock_print.assert_called_once_with(ctx)

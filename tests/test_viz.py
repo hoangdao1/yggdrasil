@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,7 +19,6 @@ from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 from yggdrasil_lm.core.nodes import AgentNode, ContextNode
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.viz.server import VizServer, _event_to_dict, _store_to_snapshot, _summarize_events
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -39,7 +38,7 @@ def _make_event(
         session_id=session_id or str(uuid.uuid4()),
         node_id=node_id,
         node_name=node_name,
-        timestamp=datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        timestamp=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
         payload=payload or {},
         parent_event_id=parent_event_id,
         duration_ms=duration_ms,
@@ -542,11 +541,10 @@ class TestVizServerWebSocketBehavior:
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
 
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws") as ws:
-                # If DI is broken, the line above raises an exception (403 status).
-                # A successful accept means FastAPI resolved `ws: WebSocket` correctly.
-                ws.send_text("ping")
+        with TestClient(app) as client, client.websocket_connect("/ws") as ws:
+            # If DI is broken, the line above raises an exception (403 status).
+            # A successful accept means FastAPI resolved `ws: WebSocket` correctly.
+            ws.send_text("ping")
                 # Server stays alive until disconnect; just connecting is enough.
 
 
@@ -573,7 +571,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_explain_returns_run_explanation_when_finalized(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         ctx = _make_ctx(query="explain me", num_events=2)
         await server.finalize(ctx)
@@ -592,7 +590,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_explain_returns_404_before_finalize(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -602,7 +600,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_explain_returns_404_for_wrong_session_id(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         ctx = _make_ctx(query="test", num_events=1)
         await server.finalize(ctx)
@@ -617,7 +615,7 @@ class TestVizServerHttpRoutes:
     @pytest.mark.asyncio
     async def test_explain_accepts_empty_session_id(self):
         """No session_id in body — returns the stored explanation without session check."""
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         ctx = _make_ctx(query="no session filter", num_events=1)
         await server.finalize(ctx)
@@ -630,7 +628,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_health_route_returns_ok(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -640,7 +638,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_index_route_returns_html(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -651,7 +649,7 @@ class TestVizServerHttpRoutes:
 
     @pytest.mark.asyncio
     async def test_static_asset_routes_return_content(self):
-        from httpx import AsyncClient, ASGITransport
+        from httpx import ASGITransport, AsyncClient
 
         server = VizServer(port=19999, open_browser=False)
         app = server._build_app()
@@ -702,9 +700,11 @@ class TestServeTrace:
         mock_server._metadata = {}
         mock_server.port = 19999
 
-        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
-            with patch("builtins.print"):
-                await serve_trace(ctx, port=19999, open_browser=False, wait=False)
+        with (
+            patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server),
+            patch("builtins.print"),
+        ):
+            await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
         mock_server.start.assert_called_once()
         mock_server.finalize.assert_called_once_with(ctx, store=None)
@@ -720,9 +720,11 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
-            with patch("builtins.print"):
-                await serve_trace(ctx, port=19999, open_browser=False, wait=False)
+        with (
+            patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server),
+            patch("builtins.print"),
+        ):
+            await serve_trace(ctx, port=19999, open_browser=False, wait=False)
 
         mock_server.set_metadata.assert_called_once_with(
             session_id=ctx.session_id, query=ctx.query
@@ -739,9 +741,11 @@ class TestServeTrace:
         mock_server.port = 19999
         mock_server._metadata = {}
 
-        with patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server):
-            with patch("builtins.print"):
-                await serve_trace(ctx, store=store, port=19999, open_browser=False, wait=False)
+        with (
+            patch("yggdrasil_lm.viz.server.VizServer", return_value=mock_server),
+            patch("builtins.print"),
+        ):
+            await serve_trace(ctx, store=store, port=19999, open_browser=False, wait=False)
 
         mock_server.attach_store.assert_called_once_with(store)
         mock_server.finalize.assert_called_once_with(ctx, store=store)

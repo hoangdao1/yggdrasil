@@ -44,14 +44,14 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Callable
+from typing import Any
 
 from yggdrasil_lm.core.nodes import ContextNode
 from yggdrasil_lm.core.store import GraphStore
-
 
 # ---------------------------------------------------------------------------
 # Status enum
@@ -70,7 +70,7 @@ class BatchStatus(StrEnum):
 # ---------------------------------------------------------------------------
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 @dataclass
@@ -197,7 +197,7 @@ class BatchExecutor:
         *,
         context_fn:  Callable[[Any], str | None] | None  = None,
         reduce_fn:   Callable[[list[Any]], Any]  | None  = None,
-        on_progress: Callable[["BatchRun"], Any] | None  = None,
+        on_progress: Callable[[BatchRun], Any] | None  = None,
         checkpoint:  bool = True,
         strategy:    str  = "sequential",
     ) -> BatchRun:
@@ -247,7 +247,7 @@ class BatchExecutor:
         *,
         context_fn:  Callable[[Any], str | None] | None  = None,
         reduce_fn:   Callable[[list[Any]], Any]  | None  = None,
-        on_progress: Callable[["BatchRun"], Any] | None  = None,
+        on_progress: Callable[[BatchRun], Any] | None  = None,
         strategy:    str = "sequential",
     ) -> BatchRun:
         """Resume a previously checkpointed run, skipping COMPLETED items.
@@ -322,7 +322,7 @@ class BatchExecutor:
                     result.output = exec_ctx.outputs.get(run.agent_id)
                     result.status = BatchStatus.COMPLETED
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — one failed item must not stop the batch
                 result.status = BatchStatus.FAILED
                 result.error  = f"{type(exc).__name__}: {exc}"
 

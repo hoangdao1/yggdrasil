@@ -84,10 +84,14 @@ async def main() -> None:
 
     # --- Parent graph: run the same sub-graph twice --------------------
     products = [
-        "QuantumBoost X9 — increases your laptop's battery life by 400% via "
-        "AI-driven quantum dynamics in the firmware.",
-        "FieldNotes notebook — 48 pages of dot-grid paper, cloth cover, "
-        "sewn binding, A5 size.",
+        (
+            "QuantumBoost X9 — increases your laptop's battery life by 400% via "
+            "AI-driven quantum dynamics in the firmware."
+        ),
+        (
+            "FieldNotes notebook — 48 pages of dot-grid paper, cloth cover, "
+            "sewn binding, A5 size."
+        ),
     ]
 
     for i, text in enumerate(products, start=1):

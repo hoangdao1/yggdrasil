@@ -7,11 +7,6 @@ END_NODE: str = "__END__"
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:     # type checkers see the real classes; runtime stays lazy
-    from yggdrasil_lm.batch import (
-        BatchItemResult as BatchItemResult,
-        BatchRun as BatchRun,
-        BatchStatus as BatchStatus,
-    )
     from yggdrasil_lm.app import (
         GraphApp as GraphApp,
         create_agent as create_agent,
@@ -22,12 +17,29 @@ if TYPE_CHECKING:     # type checkers see the real classes; runtime stays lazy
         create_tool as create_tool,
         create_transform as create_transform,
     )
+    from yggdrasil_lm.backends.claude_code import (
+        ClaudeCodeExecutor as ClaudeCodeExecutor,
+    )
     from yggdrasil_lm.backends.llm import (
         AnthropicBackend as AnthropicBackend,
         OpenAIBackend as OpenAIBackend,
     )
-    from yggdrasil_lm.backends.claude_code import (
-        ClaudeCodeExecutor as ClaudeCodeExecutor,
+    from yggdrasil_lm.batch import (
+        BatchItemResult as BatchItemResult,
+        BatchRun as BatchRun,
+        BatchStatus as BatchStatus,
+    )
+    from yggdrasil_lm.core.edges import (
+        Edge as Edge,
+        EdgeType as EdgeType,
+    )
+    from yggdrasil_lm.core.executor import (
+        ExecutionContext as ExecutionContext,
+        ExecutionOptions as ExecutionOptions,
+        GraphExecutor as GraphExecutor,
+        ResumeReadiness as ResumeReadiness,
+        TraceEvent as TraceEvent,
+        print_trace as print_trace,
     )
     from yggdrasil_lm.core.nodes import (
         AgentNode as AgentNode,
@@ -42,41 +54,29 @@ if TYPE_CHECKING:     # type checkers see the real classes; runtime stays lazy
         ToolNode as ToolNode,
         TransformNode as TransformNode,
     )
-    from yggdrasil_lm.symbolic import (
-        Program as Program,
-        Solution as Solution,
-        fact as fact,
-    )
-    from yggdrasil_lm.core.edges import (
-        Edge as Edge,
-        EdgeType as EdgeType,
-    )
     from yggdrasil_lm.core.store import (
         GraphStore as GraphStore,
         NetworkXGraphStore as NetworkXGraphStore,
     )
-    from yggdrasil_lm.core.executor import (
-        ExecutionContext as ExecutionContext,
-        ExecutionOptions as ExecutionOptions,
-        GraphExecutor as GraphExecutor,
-        ResumeReadiness as ResumeReadiness,
-        TraceEvent as TraceEvent,
-        print_trace as print_trace,
+    from yggdrasil_lm.media import (
+        ImageBlock as ImageBlock,
+        QueryContent as QueryContent,
+        build_query as build_query,
+        image_from_base64 as image_from_base64,
+        image_from_file as image_from_file,
+        image_from_url as image_from_url,
     )
     from yggdrasil_lm.observability import (
         RunExplanation as RunExplanation,
         explain_run as explain_run,
     )
+    from yggdrasil_lm.symbolic import (
+        Program as Program,
+        Solution as Solution,
+        fact as fact,
+    )
     from yggdrasil_lm.trace_ui import (
         inspect_trace as inspect_trace,
-    )
-    from yggdrasil_lm.media import (
-        ImageBlock as ImageBlock,
-        QueryContent as QueryContent,
-        image_from_file as image_from_file,
-        image_from_url as image_from_url,
-        image_from_base64 as image_from_base64,
-        build_query as build_query,
     )
 
 # Every public name resolves on first access (PEP 562), so importing a submodule —
@@ -128,19 +128,53 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "GraphApp", "create_agent", "create_context", "create_executor", "create_prompt", "create_reasoner", "create_tool", "create_transform",
-    "AnthropicBackend", "OpenAIBackend", "ClaudeCodeExecutor",
-    "BatchRun", "BatchItemResult", "BatchStatus",
-    "AgentNode", "ApprovalNode", "ContextNode", "ToolNode", "GraphNode", "TransformNode", "ReasonerNode", "FactSource",
-    "Program", "Solution", "fact",
-    "RetryPolicy", "ExecutionPolicy", "RouteRule",
-    "Edge", "EdgeType",
     "END_NODE",
-    "GraphStore", "NetworkXGraphStore",
-    "GraphExecutor", "ExecutionContext", "ExecutionOptions", "ResumeReadiness", "TraceEvent",
-    "explain_run", "RunExplanation",
-    "print_trace", "inspect_trace",
+    "AgentNode",
+    "AnthropicBackend",
+    "ApprovalNode",
+    "BatchItemResult",
+    "BatchRun",
+    "BatchStatus",
+    "ClaudeCodeExecutor",
+    "ContextNode",
+    "Edge",
+    "EdgeType",
+    "ExecutionContext",
+    "ExecutionOptions",
+    "ExecutionPolicy",
+    "FactSource",
+    "GraphApp",
+    "GraphExecutor",
+    "GraphNode",
+    "GraphStore",
     # Multimodal / image helpers
-    "ImageBlock", "QueryContent",
-    "image_from_file", "image_from_url", "image_from_base64", "build_query",
+    "ImageBlock",
+    "NetworkXGraphStore",
+    "OpenAIBackend",
+    "Program",
+    "QueryContent",
+    "ReasonerNode",
+    "ResumeReadiness",
+    "RetryPolicy",
+    "RouteRule",
+    "RunExplanation",
+    "Solution",
+    "ToolNode",
+    "TraceEvent",
+    "TransformNode",
+    "build_query",
+    "create_agent",
+    "create_context",
+    "create_executor",
+    "create_prompt",
+    "create_reasoner",
+    "create_tool",
+    "create_transform",
+    "explain_run",
+    "fact",
+    "image_from_base64",
+    "image_from_file",
+    "image_from_url",
+    "inspect_trace",
+    "print_trace",
 ]

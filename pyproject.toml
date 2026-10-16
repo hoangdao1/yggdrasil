@@ -38,7 +38,7 @@ openai      = ["openai>=1.0"]
 neo4j       = ["neo4j>=5.0"]
 claude-code = ["claude-agent-sdk>=0.1"]
 embeddings  = ["sentence-transformers>=3.0"]
-dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "mypy>=1.11", "types-networkx", "rich>=13.0"]
+dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.17,<0.18", "mypy>=1.11", "types-networkx", "rich>=13.0"]
 observe     = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 viz         = ["fastapi>=0.100", "uvicorn>=0.24", "websockets>=11.0"]
 
@@ -95,3 +95,13 @@ disallow_untyped_decorators = false
 
 [tool.ruff]
 line-length = 100
+
+# Ruff's default rule set is curated per minor release, hence the pin in
+# the dev extra.
+[tool.ruff.lint]
+# ValueError is the public contract for invalid input, wrong-shape included;
+# callers and tests catch it, so isinstance checks must not switch to TypeError.
+ignore = ["TRY004"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

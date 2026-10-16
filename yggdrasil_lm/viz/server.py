@@ -11,6 +11,7 @@ Dependency: pip install 'yggdrasil[viz]'
 
 import asyncio
 import json
+import logging
 import threading
 import webbrowser
 from collections import Counter
@@ -30,12 +31,24 @@ if TYPE_CHECKING:
 # Top-level import so get_type_hints() can resolve WebSocket annotations under
 # `from __future__ import annotations`.
 try:
-    from fastapi import WebSocket as WebSocket  # noqa: F401
+    from fastapi import WebSocket  # noqa: F401 — read from module globals by get_type_hints
 except ImportError:
     pass
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+_log = logging.getLogger(__name__)
+
+
+async def _send_json(ws: Any, msg: dict[str, Any]) -> bool:
+    """Send one message to a browser; False when the connection has gone away."""
+    try:
+        await ws.send_json(msg)
+    except Exception:  # noqa: BLE001 — any transport failure means the browser left
+        _log.debug("viz: websocket send failed", exc_info=True)
+        return False
+    return True
 
 _RUNTIME_EVENT_TYPES = {
     "pause",
@@ -304,31 +317,17 @@ class VizServer:
             self._connections.append(ws)
             # Send current state to late-joining browsers so they sync up
             if self._metadata:
-                try:
-                    await ws.send_json({"type": "meta", "data": self._metadata})
-                except Exception:
-                    pass
+                await _send_json(ws, {"type": "meta", "data": self._metadata})
             if self._summary:
-                try:
-                    await ws.send_json({"type": "summary", "data": self._summary})
-                except Exception:
-                    pass
+                await _send_json(ws, {"type": "summary", "data": self._summary})
             # Replay any events emitted before this browser connected
             for event_msg in list(self._event_log):
-                try:
-                    await ws.send_json(event_msg)
-                except Exception:
+                if not await _send_json(ws, event_msg):
                     break
             if self._graph_snapshot:
-                try:
-                    await ws.send_json({"type": "graph_state", "data": self._graph_snapshot})
-                except Exception:
-                    pass
+                await _send_json(ws, {"type": "graph_state", "data": self._graph_snapshot})
             if self._finalized_snapshot:
-                try:
-                    await ws.send_json({"type": "finalize", "data": self._finalized_snapshot})
-                except Exception:
-                    pass
+                await _send_json(ws, {"type": "finalize", "data": self._finalized_snapshot})
             try:
                 while True:
                     # Keep alive; client sends pings
@@ -523,7 +522,7 @@ class VizServer:
         for ws in list(self._connections):
             try:
                 await ws.send_text(payload)
-            except Exception:
+            except Exception:  # noqa: BLE001 — any transport failure means the browser left
                 dead.append(ws)
         for ws in dead:
             if ws in self._connections:
@@ -590,7 +589,7 @@ class _LiveTraceCtx:
 
     def __init__(self, server: VizServer):
         self._server = server
-        self._ctx: "ExecutionContext | None" = None
+        self._ctx: ExecutionContext | None = None
 
     def attach(self, executor: Any, ctx: "ExecutionContext") -> None:
         """Wire the executor's event hook to stream events via WebSocket."""

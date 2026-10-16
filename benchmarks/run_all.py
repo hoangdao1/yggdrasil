@@ -34,10 +34,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
-import time
 from pathlib import Path
+from typing import Any
 
 from benchmarks.baseline import run_baseline_multi, run_baseline_single
 from benchmarks.graph_runner import run_graph_agent
@@ -72,7 +71,7 @@ async def run_task(
         try:
             out = await coro
             results.append(out)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — one system's failure must not stop the others
             results.append(RunMetrics(
                 system=label,
                 task_id=task.id,

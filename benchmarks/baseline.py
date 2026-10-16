@@ -23,7 +23,6 @@ import asyncio
 import shutil
 import time
 from dataclasses import dataclass
-from typing import Any
 
 from benchmarks.metrics import RunMetrics
 from benchmarks.tasks import BenchmarkTask
@@ -59,7 +58,7 @@ async def _sdk_query(
     Extracts turn count, tool calls, and cost from the message stream.
     """
     try:
-        from claude_agent_sdk import (           # type: ignore[import]
+        from claude_agent_sdk import (  # type: ignore[import]
             AssistantMessage,
             ClaudeAgentOptions,
             ResultMessage,
@@ -111,7 +110,7 @@ async def _sdk_query(
                         pass
                     else:
                         error = f"sdk error ({subtype}): {result_text[:200]}"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — any run failure is recorded in the metrics
         error = str(exc)[:300]
     wall_ms = (time.perf_counter() - t0) * 1000
 
@@ -156,7 +155,7 @@ async def run_baseline_single(
     if not r.error:
         try:
             passed = task.eval_fn(r.text)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
             pass
 
     return RunMetrics(
@@ -250,7 +249,7 @@ async def run_baseline_multi(
     if not first_error:
         try:
             passed = task.eval_fn(final_output)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
             pass
 
     return RunMetrics(

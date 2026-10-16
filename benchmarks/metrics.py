@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import csv
-import io
 from dataclasses import asdict, dataclass, field
-from typing import Any
 
 
 @dataclass

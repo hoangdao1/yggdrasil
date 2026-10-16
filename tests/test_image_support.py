@@ -17,7 +17,6 @@ from yggdrasil_lm.media import (
 )
 from yggdrasil_lm.testing import StubBackend, end_turn
 
-
 # ---------------------------------------------------------------------------
 # media.py helpers
 # ---------------------------------------------------------------------------
@@ -176,7 +175,7 @@ class TestVisualRAG:
         img_ctx = await app.add_image_context("Logo", url="https://cdn.example.com/logo.png")
         await app.connect_context(agent, img_ctx)
 
-        ctx = await app.run(agent, "What colour is the logo?")
+        await app.run(agent, "What colour is the logo?")
 
         _model, _system, messages, _tools = backend.calls[0]
         user_msg = next(m for m in messages if m["role"] == "user")

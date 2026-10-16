@@ -187,10 +187,10 @@ def explain_run(ctx: ExecutionContext) -> RunExplanation:
 
 
 __all__ = [
-    "explain_run",
-    "export_trace",
     "RunExplanation",
     "cleanup_session",
+    "explain_run",
+    "export_trace",
     "get_runtime_nodes",
     "inspect_trace",
     "print_trace",

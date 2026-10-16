@@ -5,8 +5,7 @@ LLM calls are stubbed so these tests run without an API key.
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -14,14 +13,17 @@ import pytest
 
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolCall
 from yggdrasil_lm.core.edges import Edge, EdgeType
-from yggdrasil_lm.core.executor import AgentComposer, ContextNavigator, ExecutionContext, GraphExecutor
+from yggdrasil_lm.core.executor import (
+    ContextNavigator,
+    ExecutionContext,
+    GraphExecutor,
+    TraceEvent,
+)
 from yggdrasil_lm.core.nodes import (
     AgentNode,
     ApprovalNode,
     ConstraintRule,
     ContextNode,
-    DecisionRule,
-    DecisionTable,
     ExecutionPolicy,
     GraphNode,
     RetryPolicy,
@@ -31,9 +33,7 @@ from yggdrasil_lm.core.nodes import (
     TransformNode,
 )
 from yggdrasil_lm.core.store import NetworkXGraphStore
-from yggdrasil_lm.core.executor import TraceEvent, WorkflowState
 from yggdrasil_lm.observability import explain_run
-
 
 # ---------------------------------------------------------------------------
 # Stub LLM backend for tests — no API key required
@@ -286,7 +286,7 @@ async def test_graph_node_descends_into_subgraph(store):
 
     executor = GraphExecutor(store, backend=StubBackend([_end_turn("Inner done.")]))
     ctx = ExecutionContext(query="test")
-    result = await executor._execute_node(graph_node, ctx)
+    await executor._execute_node(graph_node, ctx)
     # Inner agent should have run and produced output
     assert inner_agent.node_id in ctx.outputs
 
@@ -807,7 +807,6 @@ def test_agent_node_routing_table_default():
 
 def test_embedder_import_error_message(monkeypatch):
     """When sentence-transformers is missing, Embedder raises ImportError with install hint."""
-    import importlib
     import sys
 
     # Remove the cached module so we re-execute the import guard
@@ -964,12 +963,12 @@ async def test_inspect_resume_flags_stale_and_unrecoverable(store):
     executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
     ctx = ExecutionContext(query="x", session_id="sess-stale")
     # An event 30 minutes before "now".
-    old = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    old = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     ctx.trace.append(TraceEvent(event_type="hop", session_id=ctx.session_id,
                                 node_id="n1", node_name="n1", timestamp=old, payload={}))
     ctx.outputs["have_this"] = {"x": 1}
 
-    now = datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 30, 0, tzinfo=UTC)
     report = executor.inspect_resume(
         ctx, stale_after_seconds=1200,
         required_outputs=["have_this", "missing_one"], now=now,
@@ -986,12 +985,12 @@ async def test_inspect_resume_flags_stale_and_unrecoverable(store):
 async def test_inspect_resume_ok_when_fresh_and_complete(store):
     executor = GraphExecutor(store, backend=StubBackend([_end_turn("stub")]))
     ctx = ExecutionContext(query="x", session_id="sess-fresh")
-    recent = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    recent = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
     ctx.trace.append(TraceEvent(event_type="hop", session_id=ctx.session_id,
                                 node_id="n1", node_name="n1", timestamp=recent, payload={}))
     ctx.state.data["step_a"] = {"done": True}
 
-    now = datetime(2026, 1, 1, 12, 1, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 1, 0, tzinfo=UTC)
     report = executor.inspect_resume(
         ctx, stale_after_seconds=1200, required_outputs=["step_a"], now=now,
     )
@@ -1053,7 +1052,7 @@ async def test_checkpoint_without_offload_is_unchanged(store):
 #    "limit": 5, "format": "text"}
 # ---------------------------------------------------------------------------
 
-from yggdrasil_lm.core.executor import coerce_to_schema  # noqa: E402
+from yggdrasil_lm.core.executor import coerce_to_schema
 
 _EXAMPLES_SCHEMA = {
     "type": "object",

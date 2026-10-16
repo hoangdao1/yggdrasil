@@ -91,7 +91,7 @@ def test_proof_trace():
     )
     target = ("ancestor", "a", "c")
     assert target in sol.justifications
-    rule_repr, support = sol.justifications[target]
+    _rule_repr, support = sol.justifications[target]
     assert ("parent", "a", "b") in support
     assert "rule:" in sol.explain(target)
 

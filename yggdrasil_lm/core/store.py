@@ -17,7 +17,6 @@ import networkx as nx
 from yggdrasil_lm.core.edges import Edge, EdgeType
 from yggdrasil_lm.core.nodes import AnyNode, Node, NodeType, node_from_dict
 
-
 # ---------------------------------------------------------------------------
 # Abstract interface
 # ---------------------------------------------------------------------------
@@ -395,7 +394,7 @@ class NetworkXGraphStore(GraphStore):
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "NetworkXGraphStore":
+    def from_dict(cls, data: dict[str, Any]) -> NetworkXGraphStore:
         """Restore a store from a serialised dict."""
         store = cls()
         import asyncio

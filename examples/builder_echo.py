@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
-from yggdrasil_lm import GraphApp, print_trace
-
 from examples._stub_backend import SequenceBackend, end_turn, tool_use
+from yggdrasil_lm import GraphApp, print_trace
 
 
 async def run_demo() -> None:

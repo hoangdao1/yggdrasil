@@ -26,7 +26,7 @@ async def run_python(input: dict[str, Any]) -> str:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         result = stdout.decode() + stderr.decode()
         return result.strip() or "(no output)"
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return f"Execution timed out after {timeout}s."
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — the error text is the tool's result
         return f"Execution error: {exc}"

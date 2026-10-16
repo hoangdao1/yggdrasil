@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -107,7 +107,7 @@ def _span_id_from_event(event_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 def export_trace(
-    ctx:          "ExecutionContext",
+    ctx:          ExecutionContext,
     tracer:       Any = None,
     service_name: str = _SERVICE_NAME,
 ) -> None:
@@ -123,9 +123,8 @@ def export_trace(
     it logs a warning to stderr and returns without raising.
     """
     try:
+        import opentelemetry.sdk.trace  # noqa: F401 — the SDK, not just the API, must be installed
         from opentelemetry import trace as otel_trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
     except ImportError:
         import sys
         print(
@@ -166,15 +165,13 @@ def export_trace(
 
 def _export_hop(
     tracer:   Any,
-    hop:      "TraceEvent",
-    children: dict[str | None, list["TraceEvent"]],
+    hop:      TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
     trace_id: int,
     query:    str,
 ) -> None:
     """Create one root OTel span per hop and recurse into its children."""
-    from opentelemetry.trace import SpanContext, TraceFlags, NonRecordingSpan
-    from opentelemetry.sdk.trace import ReadableSpan
-    from opentelemetry.trace import SpanKind, use_span
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
     p       = hop.payload
     hop_num = p.get("hop", "")
@@ -223,8 +220,8 @@ def _export_hop(
 
 def _export_agent(
     tracer:   Any,
-    start_ev: "TraceEvent",
-    children: dict[str | None, list["TraceEvent"]],
+    start_ev: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
     trace_id: int,
 ) -> None:
     """Create one OTel span covering the full agent execution."""
@@ -300,8 +297,8 @@ def _export_agent(
 
 def _export_tool(
     tracer:    Any,
-    call_ev:   "TraceEvent",
-    children:  dict[str | None, list["TraceEvent"]],
+    call_ev:   TraceEvent,
+    children:  dict[str | None, list[TraceEvent]],
     trace_id:  int,
 ) -> None:
     """Create one OTel span covering one tool invocation."""
@@ -348,8 +345,8 @@ def _export_tool(
 # ---------------------------------------------------------------------------
 
 def _hop_times(
-    hop:      "TraceEvent",
-    hop_children: list["TraceEvent"],
+    hop:      TraceEvent,
+    hop_children: list[TraceEvent],
 ) -> tuple[int, int]:
     """Compute start/end nanoseconds for a hop span."""
     if hop.duration_ms is not None:
@@ -379,6 +376,5 @@ def _hop_times(
 
 def _ctx_with_span(span: Any) -> Any:
     """Return an OTel Context that sets the given span as current."""
-    from opentelemetry import context as otel_context
     from opentelemetry.trace import set_span_in_context
     return set_span_in_context(span)

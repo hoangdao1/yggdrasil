@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
-from yggdrasil_lm import GraphExecutor, NetworkXGraphStore, RouteRule, create_agent
-
 from examples._stub_backend import SequenceBackend, end_turn
+from yggdrasil_lm import GraphExecutor, NetworkXGraphStore, RouteRule, create_agent
 
 
 async def run_demo() -> None:

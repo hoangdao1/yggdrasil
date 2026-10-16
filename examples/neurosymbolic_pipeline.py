@@ -28,7 +28,6 @@ import json
 from yggdrasil_lm.app import GraphApp
 from yggdrasil_lm.testing import StubBackend, end_turn
 
-
 # The rule program — the symbolic core. Edit policy here, not in a prompt.
 ELIGIBILITY_RULES = """
     adult(?p)         :- age(?p, ?a), ?a >= 18.
