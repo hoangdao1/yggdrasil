@@ -63,7 +63,8 @@ class Embedder:
         """Embed a single text string and return the vector."""
         client = self._get_client()
         vec = await asyncio.to_thread(client.encode, text, normalize_embeddings=True)
-        return vec.tolist()
+        result: list[float] = vec.tolist()
+        return result
 
     async def embed_node(self, store: GraphStore, node: AnyNode) -> AnyNode:
         """Compute and store an embedding for a single node."""

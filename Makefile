@@ -1,9 +1,12 @@
-.PHONY: test lint check
+.PHONY: test typecheck lint check
 
 test:
 	pytest
 
+typecheck:
+	mypy
+
 lint:
 	ruff check yggdrasil_lm
 
-check: lint test
+check: lint typecheck test

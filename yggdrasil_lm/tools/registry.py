@@ -19,7 +19,8 @@ Usage:
 from __future__ import annotations
 
 import importlib
-from typing import Any, Callable
+from collections.abc import ItemsView
+from typing import Any, Callable, TypeVar
 
 from yggdrasil_lm.tools.code_exec import run_python
 from yggdrasil_lm.tools.echo import echo
@@ -27,6 +28,8 @@ from yggdrasil_lm.tools.kg_query import facts as kg_facts
 from yggdrasil_lm.tools.kg_query import neighbors as kg_neighbors
 from yggdrasil_lm.tools.kg_query import reachable as kg_reachable
 from yggdrasil_lm.tools.web_search import search as web_search
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class ToolRegistry:
@@ -43,9 +46,9 @@ class ToolRegistry:
         """Register a callable under its dotted ref string."""
         self._registry[callable_ref] = fn
 
-    def tool(self, callable_ref: str) -> Callable:
+    def tool(self, callable_ref: str) -> Callable[[_F], _F]:
         """Decorator to register a function."""
-        def decorator(fn: Callable) -> Callable:
+        def decorator(fn: _F) -> _F:
             self.register(callable_ref, fn)
             return fn
         return decorator
@@ -53,7 +56,7 @@ class ToolRegistry:
     def get(self, callable_ref: str) -> Callable[..., Any] | None:
         return self._registry.get(callable_ref)
 
-    def items(self):
+    def items(self) -> ItemsView[str, Callable[..., Any]]:
         return self._registry.items()
 
     def load(self, callable_ref: str) -> Callable[..., Any]:
@@ -92,7 +95,7 @@ class ToolRegistry:
                 f"(tried {candidates})"
             ) from last_err
 
-        fn = getattr(module, fn_name)
+        fn: Callable[..., Any] = getattr(module, fn_name)
         self.register(callable_ref, fn)
         return fn
 

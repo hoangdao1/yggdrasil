@@ -18,10 +18,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from yggdrasil_lm.core.edges import Edge
+from yggdrasil_lm.core.executor import _query_text
 from yggdrasil_lm.core.store import GraphStore
 from yggdrasil_lm.observability import explain_run
 
 if TYPE_CHECKING:
+    import uvicorn
+
     from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent
 
 # Top-level import so get_type_hints() can resolve WebSocket annotations under
@@ -65,7 +68,7 @@ def _event_to_dict(event: "TraceEvent") -> dict[str, Any]:
 
 
 def _node_to_dict(node: Any) -> dict[str, Any]:
-    data = node.model_dump(mode="json")
+    data: dict[str, Any] = node.model_dump(mode="json")
     data["is_valid"] = node.is_valid
     return data
 
@@ -124,7 +127,7 @@ async def _store_to_snapshot(store: GraphStore) -> dict[str, Any]:
 
 
 def _latest_event(events: list[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
-    for event in reversed(events):
+    for event in events[::-1]:
         if event.get("event_type") == event_type:
             return event
     return None
@@ -215,7 +218,7 @@ def _ctx_summary(ctx: "ExecutionContext", *, finalized: bool = False) -> dict[st
     return _summarize_events(
         [_event_to_dict(event) for event in ctx.trace],
         session_id=ctx.session_id,
-        query=ctx.query,
+        query=_query_text(ctx.query),
         finalized=finalized,
         paused=ctx.is_paused(),
     )
@@ -236,8 +239,8 @@ class VizServer:
     def __init__(self, port: int = 7331, open_browser: bool = True):
         self.port = port
         self.open_browser = open_browser
-        self._app = None
-        self._server = None
+        self._app: Any = None
+        self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
         self._connections: list[Any] = []   # list of WebSocket connections
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -270,16 +273,16 @@ class VizServer:
         app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
         @app.get("/", response_class=HTMLResponse)
-        async def index():
+        async def index() -> HTMLResponse:
             html_path = _STATIC_DIR / "index.html"
             return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
         @app.get("/health")
-        async def health():
+        async def health() -> dict[str, str]:
             return {"status": "ok"}
 
         @app.post("/explain")
-        async def explain(body: dict[str, Any]):
+        async def explain(body: dict[str, Any]) -> Any:
             from fastapi.responses import JSONResponse
             session_id = body.get("session_id", "")
             stored_session = self._metadata.get("session_id", "")
@@ -296,7 +299,7 @@ class VizServer:
             return self._run_explanation
 
         @app.websocket("/ws")
-        async def websocket_endpoint(ws: WebSocket):
+        async def websocket_endpoint(ws: WebSocket) -> None:
             await ws.accept()
             self._connections.append(ws)
             # Send current state to late-joining browsers so they sync up
@@ -361,12 +364,13 @@ class VizServer:
             log_level="error",
             loop="asyncio",
         )
-        self._server = uvicorn.Server(config)
+        server = uvicorn.Server(config)
+        self._server = server
 
         loop_ready = threading.Event()   # daemon loop is up; _loop is set
         bind_ready = threading.Event()   # uvicorn has bound to the port
 
-        def run():
+        def run() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             # Capture the daemon loop so push_event schedules on the right loop
@@ -374,13 +378,13 @@ class VizServer:
             self._loop = loop
             loop_ready.set()
 
-            async def _serve():
+            async def _serve() -> None:
                 # Start serving in the background so we can poll server.started
                 # before signalling bind_ready.  ready.set() used to fire before
                 # serve() even ran, leaving a race window where the browser
                 # would try to connect before the socket was bound.
-                serve_task = asyncio.create_task(self._server.serve())
-                while not self._server.started:
+                serve_task = asyncio.create_task(server.serve())
+                while not server.started:
                     await asyncio.sleep(0.01)
                 bind_ready.set()
                 await serve_task
@@ -475,7 +479,7 @@ class VizServer:
             self._graph_snapshot = graph_state
         import dataclasses as _dc
         self._run_explanation = _dc.asdict(explain_run(ctx))
-        snapshot = {
+        snapshot: dict[str, Any] = {
             "session_id": ctx.session_id,
             "query": ctx.query,
             "hop_count": ctx.hop_count,
@@ -559,7 +563,7 @@ async def serve_trace(
     await server.start()
     if store is not None:
         server.attach_store(store)
-    server.set_metadata(session_id=ctx.session_id, query=ctx.query)
+    server.set_metadata(session_id=ctx.session_id, query=_query_text(ctx.query))
     await server.finalize(ctx, store=store)
 
     print(f"\nYggdrasil Trace Visualizer running at http://127.0.0.1:{port}")
@@ -591,7 +595,7 @@ class _LiveTraceCtx:
     def attach(self, executor: Any, ctx: "ExecutionContext") -> None:
         """Wire the executor's event hook to stream events via WebSocket."""
         self._ctx = ctx
-        self._server.set_metadata(session_id=ctx.session_id, query=ctx.query)
+        self._server.set_metadata(session_id=ctx.session_id, query=_query_text(ctx.query))
         executor.add_event_hook(self._server.push_event)
 
     @property
@@ -631,31 +635,31 @@ class live_trace:
         self._ctx_wrapper: _LiveTraceCtx | None = None
 
     async def __aenter__(self) -> _LiveTraceCtx:
-        self._server = VizServer(port=self._port, open_browser=self._open_browser)
+        server = self._server = VizServer(port=self._port, open_browser=self._open_browser)
         await self._server.start()
         self._server.attach_store(self._executor.store)
-        self._ctx_wrapper = _LiveTraceCtx(self._server)
+        ctx_wrapper = self._ctx_wrapper = _LiveTraceCtx(server)
 
         # Monkey-patch executor.run to auto-attach on first call
         _orig_run = self._executor.run
         _wrapper = self
 
-        async def _patched_run(entry_node_id, query, **kwargs):
+        async def _patched_run(entry_node_id: str, query: Any, **kwargs: Any) -> Any:
             ctx = await _orig_run(entry_node_id=entry_node_id, query=query, **kwargs)
-            _wrapper._ctx_wrapper._ctx = ctx
-            await _wrapper._server.finalize(ctx, store=_wrapper._executor.store)
+            ctx_wrapper._ctx = ctx
+            await server.finalize(ctx, store=_wrapper._executor.store)
             return ctx
 
         # Register event hook before run so live events stream
         self._executor.add_event_hook(self._server.push_event)
         self._executor._patched_run = _patched_run
-        self._executor.run = _patched_run  # type: ignore[method-assign]
+        self._executor.run = _patched_run
         self._executor._orig_run = _orig_run
 
         print(f"\nYggdrasil Trace Visualizer running at http://127.0.0.1:{self._port}")
         return self._ctx_wrapper
 
-    async def __aexit__(self, *_) -> None:
+    async def __aexit__(self, *_: object) -> None:
         # Restore original run
         if hasattr(self._executor, "_orig_run"):
             self._executor.run = self._executor._orig_run

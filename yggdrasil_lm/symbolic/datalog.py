@@ -415,6 +415,8 @@ def normalise_fact(item: Any) -> GroundFact:
             if not pred:
                 raise DatalogError(f"fact dict missing 'predicate': {item!r}")
             args = item.get("args", item.get("terms", []))
+            if args is None:
+                raise DatalogError(f"fact dict has null 'args': {item!r}")
             return (pred, *args)
         case list() | tuple():
             if not item:
@@ -723,18 +725,18 @@ def _eval_comparison(cmp: Comparison, binding: dict[str, Any]) -> bool:
     right = _resolve(cmp.right, binding)
     op = cmp.op
     if op in ("=", "=="):
-        return left == right
+        return bool(left == right)
     if op == "!=":
-        return left != right
+        return bool(left != right)
     try:
         if op == "<":
-            return left < right
+            return bool(left < right)
         if op == "<=":
-            return left <= right
+            return bool(left <= right)
         if op == ">":
-            return left > right
+            return bool(left > right)
         if op == ">=":
-            return left >= right
+            return bool(left >= right)
     except TypeError as exc:
         raise DatalogError(
             f"cannot compare {left!r} {op} {right!r}: {exc}"

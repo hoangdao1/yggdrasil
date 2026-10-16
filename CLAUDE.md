@@ -342,4 +342,5 @@ These are all runnable and tested — read before building:
 pytest                        # all tests
 pytest tests/test_app_api.py  # builder API tests
 pytest tests/test_examples.py # example smoke tests
+mypy                          # strict type check (must stay clean)
 ```

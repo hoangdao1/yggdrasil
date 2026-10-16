@@ -79,6 +79,7 @@ EventType = Literal[
     "schedule",
     "migration",
     "error",
+    "agent_skip",
 ]
 
 _log = logging.getLogger(__name__)
@@ -221,7 +222,7 @@ _HISTORY_ELIDE_MARK = "…[history-elided]"
 
 def _clip_for_history(text: str) -> str:
     """Clip an old message's text to a small head, marked so re-compaction is a no-op."""
-    if not isinstance(text, str) or len(text) <= _HISTORY_ELIDE_CHARS or _HISTORY_ELIDE_MARK in text:
+    if len(text) <= _HISTORY_ELIDE_CHARS or _HISTORY_ELIDE_MARK in text:
         return text
     return text[:_HISTORY_ELIDE_CHARS] + f" {_HISTORY_ELIDE_MARK} (+{len(text) - _HISTORY_ELIDE_CHARS} chars)"
 
@@ -1208,7 +1209,7 @@ class GraphExecutor:
         self.composer     = composer or AgentComposer(
             store, embedder=embedder, context_navigator=context_navigator
         )
-        self._backend     = backend or default_backend()
+        self._backend: LLMBackend | None = backend or default_backend()
         self._router_model = router_model
 
         self._tool_fns: dict[str, Any] = {}
@@ -1221,6 +1222,12 @@ class GraphExecutor:
     def add_event_hook(self, fn: Callable[[TraceEvent, ExecutionContext], Any]) -> None:
         """Register a callback invoked for every emitted event."""
         self._event_hooks.append(fn)
+
+    def _require_backend(self) -> LLMBackend:
+        """The LLM backend; executors that delegate the LLM loop elsewhere have none."""
+        if self._backend is None:
+            raise RuntimeError(f"{type(self).__name__} has no LLM backend configured")
+        return self._backend
 
     # ------------------------------------------------------------------
     # Trace emission helper
@@ -1348,7 +1355,7 @@ class GraphExecutor:
             if pause.reason == "pause_before":
                 try:
                     paused_node = await self.store.get_node(pause.node_id)
-                    if hasattr(paused_node, "pause_before"):
+                    if isinstance(paused_node, AgentNode):
                         paused_node.pause_before = False
                         await self.store.upsert_node(paused_node)
                 except Exception:
@@ -1578,21 +1585,21 @@ class GraphExecutor:
             case "contains":
                 return left is not None and right in left
             case "not_equals":
-                return left != right
+                return bool(left != right)
             case "in":
                 return left in right if right is not None else False
             case "regex":
                 return isinstance(left, str) and isinstance(right, str) and re.search(right, left) is not None
             case "gt":
-                return left > right
+                return bool(left > right)
             case "gte":
-                return left >= right
+                return bool(left >= right)
             case "lt":
-                return left < right
+                return bool(left < right)
             case "lte":
-                return left <= right
+                return bool(left <= right)
             case _:
-                return left == right
+                return bool(left == right)
 
     def _evaluate_constraint_rule(
         self,
@@ -2160,15 +2167,12 @@ class GraphExecutor:
                 try:
                     if sub_state_overlay:
                         ctx.state.data.update(sub_state_overlay)
-                    if sub_query is not None:
-                        prev_query = ctx.query
-                        ctx.query = sub_query
-                        try:
-                            await self._dispatch_strategy(node.strategy, sub_entry, ctx)
-                        finally:
-                            ctx.query = prev_query
-                    else:
+                    prev_query = ctx.query
+                    ctx.query = sub_query
+                    try:
                         await self._dispatch_strategy(node.strategy, sub_entry, ctx)
+                    finally:
+                        ctx.query = prev_query
                     return ctx.outputs.get(exit_id)
                 finally:
                     ctx._active_subgraphs.pop()
@@ -2223,15 +2227,14 @@ class GraphExecutor:
         ctx:  ExecutionContext | None = None,
     ) -> dict[str, Any]:
         """Dry-run a GraphNode's input wiring without executing anything."""
-        if isinstance(node, str):
-            resolved = await self.store.get_node(node)
-            if resolved is None:
-                raise ValueError(f"Node {node!r} not found in graph store.")
-            node = resolved
-        if not isinstance(node, GraphNode):
+        resolved = await self.store.get_node(node) if isinstance(node, str) else node
+        if resolved is None:
+            raise ValueError(f"Node {node!r} not found in graph store.")
+        if not isinstance(resolved, GraphNode):
             raise ValueError(
-                f"resolve_subgraph_inputs expected GraphNode, got {type(node).__name__}"
+                f"resolve_subgraph_inputs expected GraphNode, got {type(resolved).__name__}"
             )
+        node = resolved
         if not node.entry_node_id:
             raise ValueError(
                 f"GraphNode {node.name or node.node_id!r} has no entry_node_id."
@@ -2422,7 +2425,7 @@ class GraphExecutor:
                 tool_results = await self._handle_tool_calls(
                     last_response, node, ctx, parent_event_id=agent_event_id
                 )
-                messages = self._backend.extend_messages(messages, last_response, tool_results)
+                messages = self._require_backend().extend_messages(messages, last_response, tool_results)
                 # Bound the re-read: once the history is long, shrink old turns in place
                 # every _HISTORY_COMPACT_EVERY iterations (batched so caching stays warm).
                 if _HISTORY_COMPACT_EVERY and iterations % _HISTORY_COMPACT_EVERY == 0:
@@ -2438,7 +2441,7 @@ class GraphExecutor:
                 and tool_call_corrections < _MAX_TOOL_CALL_CORRECTIONS
             ):
                 tool_call_corrections += 1
-                messages = self._backend.extend_messages(messages, last_response, [])
+                messages = self._require_backend().extend_messages(messages, last_response, [])
                 messages.append({"role": "user", "content": _TOOL_CALL_CORRECTION_PROMPT})
                 self._emit(
                     ctx, "retry", node.node_id, node.name or "",
@@ -2483,7 +2486,7 @@ class GraphExecutor:
                 and looks_like_narration_only(last_response.text, last_response.reasoning)
             ):
                 continuation_nudges += 1
-                messages = self._backend.extend_messages(messages, last_response, [])
+                messages = self._require_backend().extend_messages(messages, last_response, [])
                 messages.append({"role": "user", "content": _CONTINUATION_NUDGE})
                 self._emit(
                     ctx, "retry", node.node_id, node.name or "",
@@ -2503,7 +2506,7 @@ class GraphExecutor:
                 _absent = missing_completion_paths(node)
                 if _absent:
                     completion_nudges += 1
-                    messages = self._backend.extend_messages(messages, last_response, [])
+                    messages = self._require_backend().extend_messages(messages, last_response, [])
                     messages.append({"role": "user", "content": (
                         "You have not finished: the file(s) this task must produce do not "
                         "exist yet — " + ", ".join(_absent) + ". Write them now, then stop. "
@@ -3014,7 +3017,7 @@ class GraphExecutor:
         tool_defs: list[dict[str, Any]],
         max_tokens: int | None = None,
     ) -> Any:
-        return await self._backend.chat(
+        return await self._require_backend().chat(
             model=node.model,
             system=system,
             messages=messages,
@@ -3057,7 +3060,7 @@ class GraphExecutor:
         assert last_exc is not None
         raise last_exc
 
-    def _idempotency_key(self, node: ToolNode, payload: Any) -> str:
+    def _idempotency_key(self, node: ToolNode | TransformNode, payload: Any) -> str:
         template = node.execution_policy.idempotency_key
         if template == "":
             return ""
@@ -3203,7 +3206,7 @@ class GraphExecutor:
             text=text[:2000],
         )
         try:
-            response = await self._backend.chat(
+            response = await self._require_backend().chat(
                 model=self._router_model,
                 system=_ROUTER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
@@ -3246,7 +3249,7 @@ class GraphExecutor:
         prompt = _ROUTER_TEMPLATE.format(agent_list=agent_list, query=query)
 
         try:
-            response = await self._backend.chat(
+            response = await self._require_backend().chat(
                 model=self._router_model,
                 system=_ROUTER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
@@ -3292,7 +3295,7 @@ class GraphExecutor:
 
         ctx = ExecutionContext(query=query)
         raw = await self._execute_agent(node, ctx)
-        text = raw.get("text", "") if isinstance(raw, dict) else str(raw)
+        text = raw.get("text", "")
 
         decision = routing or RoutingDecision(agent_id, "Direct execution (no routing phase).", 1.0)
 

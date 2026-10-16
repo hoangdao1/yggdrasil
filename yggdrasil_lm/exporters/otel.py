@@ -140,7 +140,9 @@ def export_trace(
 
     events     = ctx.trace
     session_id = ctx.session_id
-    query      = ctx.query
+    from yggdrasil_lm.core.executor import _query_text
+
+    query      = _query_text(ctx.query)
 
     # Build parent→children index
     children: dict[str | None, list[TraceEvent]] = {}
@@ -364,7 +366,7 @@ def _hop_times(
         ]
         if agent_ends:
             end_ns = max(
-                _to_ns(e.timestamp) + e.duration_ms * 1_000_000 for e in agent_ends
+                _to_ns(e.timestamp) + (e.duration_ms or 0) * 1_000_000 for e in agent_ends
             )
         else:
             end_ns = max(timestamps) + 1_000_000  # +1ms fallback

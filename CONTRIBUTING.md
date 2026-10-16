@@ -78,7 +78,12 @@ Typical local verification:
 
 ```bash
 python3 -m pytest tests -q
+python3 -m mypy            # strict; config in pyproject.toml [tool.mypy]
 ```
+
+The package is type-checked with `mypy --strict`. New code needs full
+annotations; prefer narrowing (`isinstance`, `is None`) over `cast` or
+`# type: ignore`, and give any ignore a specific error code.
 
 For a narrower pass during iteration:
 

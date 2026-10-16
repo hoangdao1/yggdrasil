@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any
 
 import networkx as nx
@@ -194,7 +195,7 @@ class NetworkXGraphStore(GraphStore):
     """
 
     def __init__(self) -> None:
-        self._g: nx.MultiDiGraph = nx.MultiDiGraph()
+        self._g: nx.MultiDiGraph[str] = nx.MultiDiGraph()
         self._nodes: dict[str, AnyNode] = {}
         self._edges: dict[str, Edge] = {}
         self._metadata: dict[str, Any] = {
@@ -214,7 +215,7 @@ class NetworkXGraphStore(GraphStore):
     # ------------------------------------------------------------------
 
     async def upsert_node(self, node: Node) -> None:
-        self._nodes[node.node_id] = node  # type: ignore[assignment]
+        self._nodes[node.node_id] = node
         self._g.add_node(
             node.node_id,
             node_type=node.node_type,
@@ -261,6 +262,7 @@ class NetworkXGraphStore(GraphStore):
         only_valid: bool = True,
         relation: str | None = None,
     ) -> list[Edge]:
+        raw: Iterable[tuple[Any, Any, Any]]
         match direction:
             case "out":
                 raw = self._g.out_edges(node_id, keys=True)

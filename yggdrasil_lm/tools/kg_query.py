@@ -22,7 +22,9 @@ from yggdrasil_lm.core.store import GraphStore
 def _label(node: Any, use_names: bool) -> str:
     if node is None:
         return ""
-    return node.name if (use_names and getattr(node, "name", "")) else node.node_id
+    name = getattr(node, "name", "") if use_names else ""
+    label: str = name or node.node_id
+    return label
 
 
 async def neighbors(input: dict[str, Any], *, store: GraphStore) -> dict[str, Any]:

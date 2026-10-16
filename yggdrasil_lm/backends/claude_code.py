@@ -27,7 +27,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from yggdrasil_lm.backends.llm import LLMBackend, LLMResponse, ToolResult, default_backend
 from yggdrasil_lm.core.executor import (
@@ -37,6 +37,7 @@ from yggdrasil_lm.core.executor import (
     RoutingDecision,
     _ROUTER_SYSTEM,
     _ROUTER_TEMPLATE,
+    _query_text,
     _summarise,
 )
 from yggdrasil_lm.core.nodes import AgentNode, ToolNode
@@ -45,33 +46,48 @@ from yggdrasil_lm.core.store import GraphStore
 # ---------------------------------------------------------------------------
 # Optional SDK imports — kept at module level so tests can patch them.
 # All are None when claude-agent-sdk is not installed; the executor raises a
-# clear ImportError at call time rather than at import time.
+# clear ImportError at call time rather than at import time. The type checker
+# sees the SDK names; code that runs without the SDK checks _SDK_AVAILABLE.
 # ---------------------------------------------------------------------------
-try:
-    from claude_agent_sdk import (                       # type: ignore[import]
+if TYPE_CHECKING:
+    from claude_agent_sdk import (
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
         ResultMessage,
         TextBlock,
+        ToolUseBlock,
         create_sdk_mcp_server,
         tool as cc_tool,
     )
+
+    _SDK_AVAILABLE: bool
+else:
     try:
-        from claude_agent_sdk import ToolUseBlock        # type: ignore[import]
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ClaudeSDKClient,
+            ResultMessage,
+            TextBlock,
+            create_sdk_mcp_server,
+            tool as cc_tool,
+        )
+        try:
+            from claude_agent_sdk import ToolUseBlock
+        except ImportError:
+            ToolUseBlock = None
+        _SDK_AVAILABLE = True
     except ImportError:
-        ToolUseBlock = None                              # type: ignore[assignment]
-    _SDK_AVAILABLE = True
-except ImportError:
-    AssistantMessage = None                              # type: ignore[assignment,misc]
-    ClaudeAgentOptions = None                            # type: ignore[assignment,misc]
-    ClaudeSDKClient = None                               # type: ignore[assignment,misc]
-    ResultMessage = None                                 # type: ignore[assignment,misc]
-    TextBlock = None                                     # type: ignore[assignment,misc]
-    ToolUseBlock = None                                  # type: ignore[assignment]
-    create_sdk_mcp_server = None                         # type: ignore[assignment]
-    cc_tool = None                                       # type: ignore[assignment]
-    _SDK_AVAILABLE = False
+        AssistantMessage = None
+        ClaudeAgentOptions = None
+        ClaudeSDKClient = None
+        ResultMessage = None
+        TextBlock = None
+        ToolUseBlock = None
+        create_sdk_mcp_server = None
+        cc_tool = None
+        _SDK_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +234,7 @@ def _sdk_tool_schema(input_schema: dict[str, Any] | None) -> dict[str, Any]:
     schema = input_schema or {}
     if isinstance(schema.get("type"), str) and isinstance(schema.get("properties"), dict):
         return schema
-    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    props = schema.get("properties", {})
     return {
         k: _json_type_to_python(v.get("type", "string"))
         for k, v in props.items()
@@ -265,7 +281,7 @@ def _sdk_option_fields() -> set[str] | None:
 
 def _build_mcp_server(
     composed: Any,
-    tool_fns: dict,
+    tool_fns: dict[str, Any],
     on_tool_result: Callable[[ToolNode, dict[str, Any], Any, bool, int], None] | None = None,
 ) -> Any | None:
     """Wrap each ComposedAgent ToolNode as an in-process Agent SDK MCP tool.
@@ -293,7 +309,7 @@ def _build_mcp_server(
         is_async = tn.is_async
 
         def _make_handler(tool_node: ToolNode, tool_fn: Any, async_fn: bool) -> Any:
-            async def handler(args: dict) -> dict:
+            async def handler(args: dict[str, Any]) -> dict[str, Any]:
                 t0 = time.monotonic()
                 success = False
                 result: Any = None
@@ -378,7 +394,7 @@ class ClaudeCodeExecutor(GraphExecutor):
         composer:           AgentComposer | None = None,
         embedder:           Any = None,
         allowed_tools:      list[str] | None = None,
-        extra_mcp_servers:  dict | None = None,
+        extra_mcp_servers:  dict[str, Any] | None = None,
         permission_mode:    str = "default",
         max_budget_usd:     float | None = None,
         cwd:                str | None = None,
@@ -424,7 +440,7 @@ class ClaudeCodeExecutor(GraphExecutor):
         same routing prompt as the parent class, but authenticated via the
         Claude Code account instead of ANTHROPIC_API_KEY.
         """
-        from yggdrasil_lm.core.store import NodeType
+        from yggdrasil_lm.core.nodes import NodeType
 
         if candidates is None:
             all_nodes = await self.store.list_nodes(node_type=NodeType.AGENT)
@@ -514,11 +530,18 @@ class ClaudeCodeExecutor(GraphExecutor):
             raise ImportError(
                 "claude-agent-sdk is required: pip install 'yggdrasil[claude-code]'"
             )
+        if not isinstance(ctx.query, str):
+            # The Agent SDK prompt is plain text; dropping the image blocks would
+            # answer a different question than the one asked.
+            raise TypeError(
+                "ClaudeCodeExecutor does not support multimodal queries; pass a plain string"
+            )
+        prompt = ctx.query
 
         import time as _time
         t0 = _time.monotonic()
 
-        composed = await self.composer.compose(node, query=ctx.query)
+        composed = await self.composer.compose(node, query=_query_text(ctx.query))
         system   = composed.build_system_prompt()
 
         # Emit agent_start so downstream metrics extraction picks up agent counts.
@@ -545,7 +568,7 @@ class ClaudeCodeExecutor(GraphExecutor):
             )
 
         # Build MCP server map — start with any user-supplied servers
-        mcp_servers: dict = dict(self._extra_mcp)
+        mcp_servers: dict[str, Any] = dict(self._extra_mcp)
 
         bridged_tool_names: set[str] = set()
 
@@ -590,9 +613,9 @@ class ClaudeCodeExecutor(GraphExecutor):
 
         try:
             run_result: _AgentRunResult = await (
-                self._run_with_sdk_client(ctx.query, options)
+                self._run_with_sdk_client(prompt, options)
                 if tool_mcp
-                else self._run_with_query(ctx.query, options)
+                else self._run_with_query(prompt, options)
             )
         except ClaudeCodeAgentError as exc:
             self._emit(
@@ -664,7 +687,9 @@ class ClaudeCodeExecutor(GraphExecutor):
 
         return {"text": run_result.text, "intent": intent}
 
-    def _session_kwargs(self, node: AgentNode, system: str, mcp_servers: dict) -> dict[str, Any]:
+    def _session_kwargs(
+        self, node: AgentNode, system: str, mcp_servers: dict[str, Any]
+    ) -> dict[str, Any]:
         """The ClaudeAgentOptions keywords for one node's session.
 
         The executor's session options, overridden key by key by the node's
@@ -713,7 +738,7 @@ class ClaudeCodeExecutor(GraphExecutor):
 
     async def _run_with_query(self, prompt: str, options: Any) -> _AgentRunResult:
         """Use query() — sufficient when no in-process MCP server is needed."""
-        from claude_agent_sdk import query as cc_query  # type: ignore[import]
+        from claude_agent_sdk import query as cc_query
 
         result_text = ""
         tool_call_count = 0
@@ -726,7 +751,7 @@ class ClaudeCodeExecutor(GraphExecutor):
             match message:
                 case AssistantMessage():
                     for block in message.content:
-                        if ToolUseBlock and isinstance(block, ToolUseBlock):
+                        if ToolUseBlock is not None and isinstance(block, ToolUseBlock):
                             tool_call_count += 1
                             tool_events.append(_extract_tool_event(block))
                 case ResultMessage():
@@ -763,7 +788,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                         for block in message.content:
                             if isinstance(block, TextBlock):
                                 parts.append(block.text)
-                            if ToolUseBlock and isinstance(block, ToolUseBlock):
+                            if ToolUseBlock is not None and isinstance(block, ToolUseBlock):
                                 tool_call_count += 1
                                 tool_events.append(_extract_tool_event(block))
                     case ResultMessage():

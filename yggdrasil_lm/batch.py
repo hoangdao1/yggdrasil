@@ -396,7 +396,9 @@ class BatchExecutor:
         if run_node is None:
             raise ValueError(f"No checkpoint found for run_id={run_id!r}")
 
-        run_data = json.loads(run_node.content)  # type: ignore[union-attr]
+        if not isinstance(run_node, ContextNode):
+            raise ValueError(f"Checkpoint node for run_id={run_id!r} is not a ContextNode")
+        run_data = json.loads(run_node.content)
         run = BatchRun(
             run_id=run_id,
             agent_id=run_data["agent_id"],
@@ -408,9 +410,9 @@ class BatchExecutor:
         # Reload per-item state
         for i in range(run.total):
             item_node = await self.store.get_node(_item_node_id(run_id, str(i)))
-            if item_node is None:
+            if not isinstance(item_node, ContextNode):
                 continue
-            item_data = json.loads(item_node.content)  # type: ignore[union-attr]
+            item_data = json.loads(item_node.content)
             result = run.results[str(i)]
             result.status = BatchStatus(item_data["status"])
             result.error  = item_data.get("error")

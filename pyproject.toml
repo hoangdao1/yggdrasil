@@ -38,7 +38,7 @@ openai      = ["openai>=1.0"]
 neo4j       = ["neo4j>=5.0"]
 claude-code = ["claude-agent-sdk>=0.1"]
 embeddings  = ["sentence-transformers>=3.0"]
-dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "rich>=13.0"]
+dev         = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff", "mypy>=1.11", "types-networkx", "rich>=13.0"]
 observe     = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
 viz         = ["fastapi>=0.100", "uvicorn>=0.24", "websockets>=11.0"]
 
@@ -65,6 +65,33 @@ include = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["yggdrasil_lm"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+# Optional extras: type-check cleanly whether or not they are installed.
+[[tool.mypy.overrides]]
+module = [
+    "anthropic.*",
+    "openai.*",
+    "neo4j.*",
+    "claude_agent_sdk.*",
+    "sentence_transformers.*",
+    "opentelemetry.*",
+    "fastapi.*",
+    "uvicorn.*",
+    "rich.*",
+]
+ignore_missing_imports = true
+
+# FastAPI route decorators are untyped when the viz extra is not installed.
+[[tool.mypy.overrides]]
+module = ["yggdrasil_lm.viz.server"]
+disallow_untyped_decorators = false
 
 [tool.ruff]
 line-length = 100

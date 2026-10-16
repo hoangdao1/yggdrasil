@@ -12,6 +12,7 @@ from typing import Any
 from yggdrasil_lm.core.executor import (
     ExecutionContext,
     TraceEvent,
+    _query_text,
     cleanup_session,
     get_runtime_nodes,
     print_trace,
@@ -126,7 +127,7 @@ def explain_run(ctx: ExecutionContext) -> RunExplanation:
 
     return RunExplanation(
         session_id=ctx.session_id,
-        query=ctx.query,
+        query=_query_text(ctx.query),
         hop_count=ctx.hop_count,
         paused=paused,
         hops=[

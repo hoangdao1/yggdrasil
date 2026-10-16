@@ -323,7 +323,8 @@ class PromptNode(Node):
     def render(self, **kwargs: Any) -> str:
         """Render the template with the given variables."""
         from jinja2 import Template
-        return Template(self.template).render(**kwargs)
+        rendered: str = Template(self.template).render(**kwargs)
+        return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +522,7 @@ AnyNode = AgentNode | ToolNode | ContextNode | PromptNode | SchemaNode | GraphNo
 
 def node_from_dict(data: dict[str, Any]) -> AnyNode:
     """Deserialise a node dict into the correct typed subclass."""
-    _type_map = {
+    _type_map: dict[NodeType, type[Node]] = {
         NodeType.AGENT:     AgentNode,
         NodeType.TOOL:      ToolNode,
         NodeType.CONTEXT:   ContextNode,

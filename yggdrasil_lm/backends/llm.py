@@ -175,8 +175,8 @@ def has_mangled_tool_args(tool_calls: "list[ToolCall]") -> bool:
     """True when any call's argument KEYS carry tool-call markup — a server-side
     mis-parse, not arguments the model meant to send."""
     for call in tool_calls:
-        if not isinstance(call.input, dict):
-            continue
+        if not isinstance(call.input, dict):  # parsed JSON may not be an object
+            continue  # type: ignore[unreachable]
         for key in call.input:
             low = str(key).lower()
             if any(marker in low for marker in _MANGLED_KEY_MARKERS):

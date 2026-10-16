@@ -13,7 +13,7 @@ from typing import Any
 
 from yggdrasil_lm.backends.llm import AnthropicBackend, LLMBackend, OpenAIBackend
 from yggdrasil_lm.core.edges import Edge
-from yggdrasil_lm.core.executor import GraphExecutor, QueryContent
+from yggdrasil_lm.core.executor import ExecutionContext, GraphExecutor, QueryContent
 from yggdrasil_lm.core.nodes import (
     AgentNode,
     ContextNode,
@@ -499,7 +499,7 @@ class GraphApp:
         *,
         strategy: str = "sequential",
         **kwargs: Any,
-    ):
+    ) -> ExecutionContext:
         return await self.executor.run(
             entry_node_id=self._node_id(entry_node),
             query=query,
@@ -514,7 +514,7 @@ class GraphApp:
         inputs: dict[str, Any] | None = None,
         query: str | None = None,
         **kwargs: Any,
-    ):
+    ) -> ExecutionContext:
         """Run a ``GraphNode`` in isolation — the testing / unit-of-work entry point.
 
         Args:

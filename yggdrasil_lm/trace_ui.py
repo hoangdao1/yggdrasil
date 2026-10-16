@@ -43,7 +43,7 @@ import json
 import sys
 from typing import IO, Any, Literal
 
-from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, print_trace  # noqa: F401
+from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, _query_text, print_trace  # noqa: F401
 
 __all__ = ["inspect_trace", "print_trace"]
 
@@ -90,7 +90,7 @@ def inspect_trace(
         case ExecutionContext():
             events     = ctx.trace
             session_id = ctx.session_id
-            query      = ctx.query
+            query      = _query_text(ctx.query)
             hop_count  = ctx.hop_count
         case _:
             events     = ctx
@@ -179,7 +179,7 @@ def _truncate(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
 
 
-def _json_panel(data: dict | str, title: str, color: str, verbose: bool) -> Any:
+def _json_panel(data: dict[str, Any] | str, title: str, color: str, verbose: bool) -> Any:
     """Return a Syntax panel for JSON data, or a dim one-liner when not verbose."""
     raw = json.dumps(data, indent=2, ensure_ascii=False) if isinstance(data, dict) else data
     if not verbose:

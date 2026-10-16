@@ -10,4 +10,6 @@ __pycache__/
 .DS_Store
 dist/
 
+# mypy
+.mypy_cache/
 uv.lock
