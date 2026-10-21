@@ -386,6 +386,67 @@ async def test_agent_error_emits_trace_event(store, agent):
     assert errors[0].payload["subtype"] == "auth"
 
 
+def _failed_result(subtype: str):
+    from claude_agent_sdk import ResultMessage
+    return ResultMessage(subtype=subtype, duration_ms=1, duration_api_ms=1, is_error=True,
+                         num_turns=3, session_id="s_1", total_cost_usd=1.25,
+                         usage={"input_tokens": 400, "output_tokens": 30},
+                         result="stopped")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subtype", ["error_max_turns", "error_max_budget_usd",
+                                     "error_during_execution"])
+async def test_an_agent_that_ends_in_error_still_reports_what_it_spent(store, agent, subtype):
+    """A failed result is a paid one. The error path raised before reading the cost, so
+    an agent stopped at its turn limit or budget cap added nothing to the run's spend.
+    Only the SDK's message stream is faked; the executor is the real one."""
+    await store.upsert_node(agent)
+
+    async def stream(prompt, options):
+        yield _failed_result(subtype)
+
+    with (
+        patch("yggdrasil_lm.backends.claude_code._SDK_AVAILABLE", True),
+        patch("yggdrasil_lm.backends.claude_code._build_mcp_server", return_value=None),
+        patch("yggdrasil_lm.backends.claude_code.ClaudeAgentOptions", MagicMock()),
+        patch("claude_agent_sdk.query", stream),
+    ):
+        ctx = ExecutionContext(query="start")
+        with pytest.raises(ClaudeCodeAgentError) as err:
+            await ClaudeCodeExecutor(store)._execute_agent(agent, ctx)
+
+    assert (err.value.subtype, err.value.cost_usd) == (subtype, 1.25)
+    event = next(e for e in ctx.trace if e.event_type == "error")
+    assert event.payload["cost_usd"] == 1.25
+    assert (event.payload["tokens_in"], event.payload["tokens_out"]) == (400, 30)
+
+
+@pytest.mark.asyncio
+async def test_the_sdk_client_path_reports_a_failed_agents_spend_too():
+    """The in-process MCP path reads its own message stream; same rule."""
+    class _Client:
+        def __init__(self, options):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def query(self, prompt):
+            return None
+
+        async def receive_response(self):
+            yield _failed_result("error_max_turns")
+
+    with (patch("yggdrasil_lm.backends.claude_code.ClaudeSDKClient", _Client),
+          pytest.raises(ClaudeCodeAgentError) as err):
+        await ClaudeCodeExecutor(NetworkXGraphStore())._run_with_sdk_client("q", object())
+    assert (err.value.cost_usd, err.value.tokens_in, err.value.tokens_out) == (1.25, 400, 30)
+
+
 # ---------------------------------------------------------------------------
 # pause_before must be honored (this override replaces the base method)
 # ---------------------------------------------------------------------------

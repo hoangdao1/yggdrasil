@@ -129,12 +129,31 @@ class _ClaudeCodeBootstrapBackend(LLMBackend):
 
 
 class ClaudeCodeAgentError(RuntimeError):
-    """Structured error raised when the Claude Code SDK returns a failed result."""
+    """Structured error raised when the Claude Code SDK returns a failed result.
 
-    def __init__(self, subtype: str, result: str) -> None:
+    A failed result is still a PAID one: an agent stopped at its turn limit or its
+    budget cap spent real money first. `cost_usd` / `tokens_in` / `tokens_out` carry
+    what the SDK reported, so the `error` trace event can account for it — without
+    them, every agent that ended in error was missing from a run's spend and its cap.
+    """
+
+    def __init__(self, subtype: str, result: str, *, cost_usd: float | None = None,
+                 tokens_in: int = 0, tokens_out: int = 0) -> None:
         self.subtype = subtype
         self.result = result
+        self.cost_usd = cost_usd
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
         super().__init__(f"Claude Code agent error ({subtype}): {result}")
+
+
+def _result_error(message: Any) -> ClaudeCodeAgentError:
+    """The error for a failed ResultMessage, carrying the spend the SDK reported."""
+    tokens_in, tokens_out = _split_tokens(getattr(message, "usage", None))
+    return ClaudeCodeAgentError(
+        getattr(message, "subtype", "unknown"), getattr(message, "result", None) or "",
+        cost_usd=getattr(message, "total_cost_usd", None),
+        tokens_in=tokens_in, tokens_out=tokens_out)
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +644,11 @@ class ClaudeCodeExecutor(GraphExecutor):
                     "source": "claude_code",
                     "subtype": exc.subtype,
                     "message": exc.result,
+                    # What the failed agent spent: no agent_end follows an error, so
+                    # this is the only place a run's accounting can hear of it.
+                    "cost_usd": getattr(exc, "cost_usd", None),
+                    "tokens_in": int(getattr(exc, "tokens_in", 0) or 0),
+                    "tokens_out": int(getattr(exc, "tokens_out", 0) or 0),
                 },
                 parent_event_id=agent_event_id,
             )
@@ -757,8 +781,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                             tool_events.append(_extract_tool_event(block))
                 case ResultMessage():
                     if getattr(message, "is_error", False):
-                        subtype = getattr(message, "subtype", "unknown")
-                        raise ClaudeCodeAgentError(subtype, message.result or "")
+                        raise _result_error(message)
                     result_text = message.result or ""
                     cost_usd = getattr(message, "total_cost_usd", None)
                     tokens_in, tokens_out = _split_tokens(getattr(message, "usage", None))
@@ -794,8 +817,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                                 tool_events.append(_extract_tool_event(block))
                     case ResultMessage():
                         if getattr(message, "is_error", False):
-                            subtype = getattr(message, "subtype", "unknown")
-                            raise ClaudeCodeAgentError(subtype, message.result or "")
+                            raise _result_error(message)
                         cost_usd = getattr(message, "total_cost_usd", None)
                         tokens_in, tokens_out = _split_tokens(getattr(message, "usage", None))
 
