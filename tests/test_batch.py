@@ -15,6 +15,12 @@ from yggdrasil_lm.core.store import NetworkXGraphStore
 # the warning so test output stays clean.
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
+# Batch sizes and expected counts shared by the assertions below.
+BATCH_OF_THREE = 3
+BATCH_OF_TWO = 2
+BATCH_OF_SIX = 6
+CONCURRENCY_CAP = 2
+
 
 # ---------------------------------------------------------------------------
 # Stub executor — no real LLM calls
@@ -90,7 +96,7 @@ async def test_all_items_succeed(batch, agent):
     )
 
     assert run.status    == BatchStatus.COMPLETED
-    assert run.completed == 3
+    assert run.completed == BATCH_OF_THREE
     assert run.failed    == 0
     assert run.progress  == 1.0
     assert run.ended_at  is not None
@@ -117,7 +123,7 @@ async def test_one_failure_does_not_cancel_others(batch, agent):
     run = await batch.run(agent.node_id, items, query_fn=lambda x: x)
 
     assert run.status    == BatchStatus.PARTIAL
-    assert run.completed == 2
+    assert run.completed == BATCH_OF_TWO
     assert run.failed    == 1
 
     assert run.results["0"].status == BatchStatus.COMPLETED
@@ -132,7 +138,7 @@ async def test_all_fail(batch, agent):
 
     assert run.status    == BatchStatus.FAILED
     assert run.completed == 0
-    assert run.failed    == 2
+    assert run.failed    == BATCH_OF_TWO
 
 
 @pytest.mark.asyncio
@@ -172,7 +178,7 @@ async def test_progress_callback_called_per_item(batch, agent):
         on_progress=lambda r: calls.append(r.progress),
     )
 
-    assert len(calls) == 3
+    assert len(calls) == BATCH_OF_THREE
     assert calls[-1] == 1.0
 
 
@@ -184,7 +190,7 @@ async def test_async_progress_callback(batch, agent):
         calls.append(r.completed + r.failed)
 
     await batch.run(agent.node_id, ["a", "b"], query_fn=lambda x: x, on_progress=cb)
-    assert len(calls) == 2
+    assert len(calls) == BATCH_OF_TWO
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +213,7 @@ async def test_checkpoint_item_nodes_persisted(store, agent):
     items = ["x", "y", "z"]
     run   = await batch.run(agent.node_id, items, query_fn=lambda x: x, checkpoint=True)
 
-    for i in range(len(items)):
+    for i, _item in enumerate(items):
         node = await store.get_node(_item_node_id(run.run_id, str(i)))
         assert node is not None
         assert node.content_type == "batch_item"
@@ -246,7 +252,7 @@ async def test_resume_skips_completed_items(store, agent):
 
     # First run — all succeed, all checkpointed
     run = await batch.run(agent.node_id, items, query_fn=lambda x: x, checkpoint=True)
-    assert run.completed == 3
+    assert run.completed == BATCH_OF_THREE
 
     # Clear call log, then resume
     tracking.calls.clear()
@@ -254,7 +260,7 @@ async def test_resume_skips_completed_items(store, agent):
 
     # Nothing should have been re-run
     assert tracking.calls == []
-    assert resumed.completed == 3
+    assert resumed.completed == BATCH_OF_THREE
 
 
 @pytest.mark.asyncio
@@ -273,7 +279,7 @@ async def test_resume_reruns_failed_items(store, agent):
         query_fn=lambda x: "fixed" if x == "FAIL:bad" else x,
     )
 
-    assert resumed.completed == 2
+    assert resumed.completed == BATCH_OF_TWO
     assert resumed.failed    == 0
 
 
@@ -300,7 +306,7 @@ async def test_reduce_fn_called_with_successful_outputs(batch, agent):
     )
 
     assert run.reduced_output is not None
-    assert len(run.reduced_output) == 2   # "c" failed, only a+b in reduce
+    assert len(run.reduced_output) == BATCH_OF_TWO   # "c" failed, only a+b in reduce
 
 
 @pytest.mark.asyncio
@@ -333,7 +339,7 @@ async def test_concurrency_limit_respected():
 
     await batch.run(agent.node_id, list(range(6)), query_fn=str, checkpoint=False)
 
-    assert slow.peak <= 2
+    assert slow.peak <= CONCURRENCY_CAP
 
 
 @pytest.mark.asyncio
@@ -345,7 +351,7 @@ async def test_concurrency_unlimited_runs_all_in_parallel():
 
     await batch.run(agent.node_id, list(range(6)), query_fn=str, checkpoint=False)
 
-    assert slow.peak == 6
+    assert slow.peak == BATCH_OF_SIX
 
 
 # ---------------------------------------------------------------------------
@@ -454,5 +460,5 @@ async def test_executor_batch_method_runs_agent(store, agent):
         )
     deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert not deprecations, f"executor.batch() leaked DeprecationWarning: {deprecations}"
-    assert run.total == 2
+    assert run.total == BATCH_OF_TWO
     assert run.status == BatchStatus.COMPLETED

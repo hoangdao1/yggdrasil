@@ -35,6 +35,12 @@ from yggdrasil_lm.core.nodes import (
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.observability import explain_run
 
+# Expected counts and values reused by the executor assertions below.
+EXPECTED_RETRY_ATTEMPTS = 2        # flaky backend/tool succeeds on its second attempt
+EXPECTED_TOOL_CALLS = 2            # one failed call + one successful retry
+EXPECTED_ELAPSED_SECONDS = 1800.0  # trace event happened 30 minutes before "now"
+EXPECTED_COERCED_LIMIT = 5         # integer field in the example payload
+
 # ---------------------------------------------------------------------------
 # Stub LLM backend for tests — no API key required
 # ---------------------------------------------------------------------------
@@ -56,8 +62,7 @@ class StubBackend(LLMBackend):
         continuation = []
         if response.tool_calls:
             continuation.append({"role": "assistant", "content": str(response.tool_calls)})
-        for tr in tool_results:
-            continuation.append({"role": "tool", "content": tr.content})
+        continuation.extend({"role": "tool", "content": tr.content} for tr in tool_results)
         return messages + continuation
 
 
@@ -402,7 +407,7 @@ async def test_graph_node_execution_policy_retries(store):
     class FlakyBackend(LLMBackend):
         async def chat(self, model, system, messages, tools, max_tokens=8096):
             attempts["n"] += 1
-            if attempts["n"] < 2:
+            if attempts["n"] < EXPECTED_RETRY_ATTEMPTS:
                 raise RuntimeError("transient")
             return _end_turn("recovered")
 
@@ -418,7 +423,7 @@ async def test_graph_node_execution_policy_retries(store):
     executor = GraphExecutor(store, backend=FlakyBackend())
     ctx = ExecutionContext(query="test")
     result = await executor._execute_node(sub, ctx)
-    assert attempts["n"] >= 2
+    assert attempts["n"] >= EXPECTED_RETRY_ATTEMPTS
     assert isinstance(result, dict) and "recovered" in result["text"]
 
 
@@ -548,7 +553,7 @@ async def test_tool_retries_and_idempotency_cache(store):
 
     assert first == "ok:1"
     assert second == "ok:1"
-    assert calls["count"] == 2
+    assert calls["count"] == EXPECTED_TOOL_CALLS
     assert any(e.event_type == "retry" for e in ctx.trace)
 
 
@@ -975,7 +980,7 @@ async def test_inspect_resume_flags_stale_and_unrecoverable(store):
     )
 
     assert report.is_stale is True
-    assert report.seconds_since_last_event == 1800.0
+    assert report.seconds_since_last_event == EXPECTED_ELAPSED_SECONDS
     assert report.available == ["have_this"]
     assert report.unrecoverable == ["missing_one"]
     assert report.ok is False
@@ -1074,7 +1079,7 @@ def test_comma_separated_string_becomes_an_array():
     assert got["tags"] == ["new", "sale", "featured"]
     assert got["keywords"] == ["A", "B", "C"]      # surrounding spaces trimmed
     assert got["regions"] == ["eu"]               # a single value is a 1-element list
-    assert got["limit"] == 5                       # already correct → untouched
+    assert got["limit"] == EXPECTED_COERCED_LIMIT   # already correct → untouched
     assert got["format"] == "text"              # string param stays a string
 
 

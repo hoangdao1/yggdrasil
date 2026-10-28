@@ -7,6 +7,9 @@ from yggdrasil_lm.core.nodes import AgentNode, ToolNode
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.retrieval.wrrf import semantic_search
 
+COSINE_TOLERANCE = 1e-6      # near-equality margin for computed edge weights
+EXPLICIT_EDGE_WEIGHT = 0.55  # weight attach_tool() must pass through untouched
+
 
 def _vec(seed: float, dim: int = 8) -> list[float]:
     """Generate a simple unit vector for testing."""
@@ -170,7 +173,7 @@ async def test_attach_tool_auto_weight():
     await store.upsert_node(tool)
 
     edge = await store.attach_tool(agent.node_id, tool.node_id)
-    assert abs(edge.weight - 1.0) < 1e-6
+    assert abs(edge.weight - 1.0) < COSINE_TOLERANCE
 
 
 @pytest.mark.asyncio
@@ -183,7 +186,7 @@ async def test_attach_tool_orthogonal_vectors():
     await store.upsert_node(tool)
 
     edge = await store.attach_tool(agent.node_id, tool.node_id)
-    assert abs(edge.weight) < 1e-6
+    assert abs(edge.weight) < COSINE_TOLERANCE
 
 
 @pytest.mark.asyncio
@@ -209,7 +212,7 @@ async def test_attach_tool_explicit_weight_overrides_auto():
     await store.upsert_node(tool)
 
     edge = await store.attach_tool(agent.node_id, tool.node_id, weight=0.55)
-    assert edge.weight == 0.55
+    assert edge.weight == EXPLICIT_EDGE_WEIGHT
 
 
 @pytest.mark.asyncio

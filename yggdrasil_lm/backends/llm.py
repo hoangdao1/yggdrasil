@@ -118,6 +118,45 @@ _HERMES_BLOCK_RE = _re.compile(r"<\s*tool_call\s*>(.*?)(?:<\s*/\s*tool_call\s*>|
                                _re.IGNORECASE | _re.DOTALL)
 
 
+def _collect_hermes_calls(chan: str, calls: list[ToolCall]) -> None:
+    """Append ToolCalls recovered from Hermes-style JSON bodies found in `chan`.
+
+    A hybrid block also matches here, but its body is not JSON, so it falls
+    through to the Llama scan.
+    """
+    for body in _HERMES_BLOCK_RE.findall(chan):
+        stripped = body.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            obj = json.loads(stripped)
+        except ValueError:  # not JSON → try the other dialect
+            continue
+        name = obj.get("name") or obj.get("function")
+        args = obj.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:  # noqa: BLE001
+                args = {}
+        if name:
+            calls.append(ToolCall(id=f"recovered_{len(calls)}", name=str(name),
+                                  input=args if isinstance(args, dict) else {}))
+
+
+def _collect_llama_calls(chan: str, calls: list[ToolCall]) -> None:
+    """Append ToolCalls from Llama-3 / hybrid `<function=name>` markup in `chan`."""
+    for m in _FUNC_NAME_RE.finditer(chan):
+        name = m.group(1)
+        # Scan only up to the next function block so params aren't cross-assigned.
+        nxt = _FUNC_NAME_RE.search(chan, m.end())
+        segment = chan[m.end():nxt.start() if nxt else len(chan)]
+        args = {k: v.strip() for k, v in _PARAM_RE.findall(segment)}
+        if any(c.name == name and c.input == args for c in calls):
+            continue                     # already recovered from the JSON pass
+        calls.append(ToolCall(id=f"recovered_{len(calls)}", name=name, input=args))
+
+
 def parse_text_tool_calls(*channels: str | None) -> list[ToolCall]:
     """Recover structured ToolCalls from tool-call markup the API layer left as text.
 
@@ -127,37 +166,57 @@ def parse_text_tool_calls(*channels: str | None) -> list[ToolCall]:
     for chan in channels:
         if not chan:
             continue
-        # Hermes-style JSON bodies first — a hybrid block also matches here, but its
-        # body is not JSON, so it falls through to the Llama scan below.
-        for body in _HERMES_BLOCK_RE.findall(chan):
-            stripped = body.strip()
-            if not stripped.startswith("{"):
-                continue
-            try:
-                obj = json.loads(stripped)
-            except ValueError:  # not JSON → try the other dialect
-                continue
-            name = obj.get("name") or obj.get("function")
-            args = obj.get("arguments")
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:  # noqa: BLE001
-                    args = {}
-            if name:
-                calls.append(ToolCall(id=f"recovered_{len(calls)}", name=str(name),
-                                      input=args if isinstance(args, dict) else {}))
-        # Llama-3 / hybrid: <function=name> with <parameter=key>value</parameter>
-        for m in _FUNC_NAME_RE.finditer(chan):
-            name = m.group(1)
-            # Scan only up to the next function block so params aren't cross-assigned.
-            nxt = _FUNC_NAME_RE.search(chan, m.end())
-            segment = chan[m.end():nxt.start() if nxt else len(chan)]
-            args = {k: v.strip() for k, v in _PARAM_RE.findall(segment)}
-            if any(c.name == name and c.input == args for c in calls):
-                continue                     # already recovered from the JSON pass
-            calls.append(ToolCall(id=f"recovered_{len(calls)}", name=name, input=args))
+        _collect_hermes_calls(chan, calls)
+        _collect_llama_calls(chan, calls)
     return calls
+
+
+_FINISH_REASON_BY_OPENAI = {"tool_calls": "tool_use", "length": "max_tokens"}
+
+
+def _drop_mangled_calls(
+    tool_calls: list[ToolCall],
+    tools: list[dict[str, Any]],
+    text: str,
+    reasoning: str,
+    stop_reason: str,
+) -> tuple[list[ToolCall], str]:
+    """Replace server-mangled tool calls with recovered ones.
+
+    The server half-parsed an XML call into `tool_calls` whose ARGUMENT KEYS are
+    markup fragments — every real argument lost. Running that is worse than
+    failing it (the tool silently answers a different question), so drop the
+    mangled calls and treat the turn as an unparsed call.
+    """
+    if tools and tool_calls and has_mangled_tool_args(tool_calls):
+        recovered = parse_text_tool_calls(text, reasoning)
+        return recovered, ("tool_use" if recovered else "unparsed_tool_call")
+    return tool_calls, stop_reason
+
+
+def _recover_text_tool_calls(
+    stop_reason: str,
+    tool_calls: list[ToolCall],
+    tools: list[dict[str, Any]],
+    text: str,
+    reasoning: str,
+) -> tuple[list[ToolCall], str]:
+    """Recover a tool call the model wrote as plain text and the server never parsed.
+
+    That is NOT the end of the turn: prefer RECOVERING it — the name and arguments
+    are right there, and re-prompting both costs a turn and relies on a model that
+    often cannot comply. Only flag for a re-prompt when the markup is present but
+    unparseable.
+    """
+    if (
+        stop_reason != "end_turn"
+        or tool_calls
+        or not tools
+        or not looks_like_unparsed_tool_call(text, reasoning)
+    ):
+        return tool_calls, stop_reason
+    recovered = parse_text_tool_calls(text, reasoning)
+    return (recovered, "tool_use") if recovered else (tool_calls, "unparsed_tool_call")
 
 
 # --- Detecting arguments the SERVER mangled ---------------------------------
@@ -332,14 +391,15 @@ class OpenAIBackend(LLMBackend):
         # left None it preserves the server/default sampling.
         self._temperature = temperature
 
-    async def chat(
+    def _chat_kwargs(
         self,
         model:      str,
         system:     str,
         messages:   list[dict[str, Any]],
         tools:      list[dict[str, Any]],
-        max_tokens: int = 8096,
-    ) -> LLMResponse:
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        """Build the chat.completions request keywords for one turn."""
         oai_messages: list[dict[str, Any]] = []
         if system:
             oai_messages.append({"role": "system", "content": system})
@@ -361,6 +421,17 @@ class OpenAIBackend(LLMBackend):
             kwargs["temperature"] = self._temperature
         if tools:
             kwargs["tools"] = [_anthropic_to_openai_tool(t) for t in tools]
+        return kwargs
+
+    async def chat(
+        self,
+        model:      str,
+        system:     str,
+        messages:   list[dict[str, Any]],
+        tools:      list[dict[str, Any]],
+        max_tokens: int = 8096,
+    ) -> LLMResponse:
+        kwargs = self._chat_kwargs(model, system, messages, tools, max_tokens)
 
         response = await self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
@@ -372,52 +443,19 @@ class OpenAIBackend(LLMBackend):
         # tool-calling turn. Capture it so the executor can salvage it / detect a
         # mid-thought truncation rather than reading an empty `content` as "done".
         reasoning = getattr(msg, "reasoning_content", None) or ""
-        tool_calls: list[ToolCall] = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    input=json.loads(tc.function.arguments),
-                ))
-
+        tool_calls = [
+            ToolCall(id=tc.id, name=tc.function.name, input=json.loads(tc.function.arguments))
+            for tc in msg.tool_calls or []
+        ]
         # `length` means the response was cut off at max_tokens — NOT that the model
         # finished. Surfaced as a distinct stop_reason so the executor can retry with
         # a larger budget instead of terminating the agent with an empty result (a
         # reasoning-heavy model can spend the whole budget in `reasoning_content`).
-        match choice.finish_reason:
-            case "tool_calls":
-                stop_reason = "tool_use"
-            case "length":
-                stop_reason = "max_tokens"
-            case _:
-                stop_reason = "end_turn"
-        # The server half-parsed an XML call into `tool_calls` whose ARGUMENT KEYS are
-        # markup fragments — every real argument lost. Running that is worse than
-        # failing it (the tool silently answers a different question), so drop the
-        # mangled calls and treat the turn as an unparsed call.
-        if tools and tool_calls and has_mangled_tool_args(tool_calls):
-            recovered = parse_text_tool_calls(text, reasoning)
-            tool_calls = recovered
-            stop_reason = "tool_use" if recovered else "unparsed_tool_call"
-
-        # The model wrote a tool call as text and the server didn't parse it into
-        # `tool_calls`. That is NOT the end of the turn. Prefer RECOVERING it — the
-        # name and arguments are right there, and re-prompting both costs a turn and
-        # relies on a model that often cannot comply. Only flag for a re-prompt when
-        # the markup is present but unparseable.
-        if (
-            stop_reason == "end_turn"
-            and not tool_calls
-            and tools
-            and looks_like_unparsed_tool_call(text, reasoning)
-        ):
-            recovered = parse_text_tool_calls(text, reasoning)
-            if recovered:
-                tool_calls = recovered
-                stop_reason = "tool_use"
-            else:
-                stop_reason = "unparsed_tool_call"
+        stop_reason = _FINISH_REASON_BY_OPENAI.get(choice.finish_reason, "end_turn")
+        tool_calls, stop_reason = _drop_mangled_calls(
+            tool_calls, tools, text, reasoning, stop_reason)
+        tool_calls, stop_reason = _recover_text_tool_calls(
+            stop_reason, tool_calls, tools, text, reasoning)
         return LLMResponse(
             text=text, tool_calls=tool_calls, stop_reason=stop_reason,
             reasoning=reasoning, _raw=msg,

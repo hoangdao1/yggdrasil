@@ -10,6 +10,7 @@ Dependency: pip install 'yggdrasil[viz]'
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
@@ -30,13 +31,12 @@ if TYPE_CHECKING:
 
 # Top-level import so get_type_hints() can resolve WebSocket annotations under
 # `from __future__ import annotations`.
-try:
-    from fastapi import WebSocket  # noqa: F401 — read from module globals by get_type_hints
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from fastapi import WebSocket
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_LOW_CONFIDENCE = 0.7   # routing confidence below this is surfaced as "low-conf"
 
 _log = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def _summarize_events(
         event for event in events
         if event.get("event_type") == "routing"
         and isinstance(event.get("payload", {}).get("confidence"), (int, float))
-        and float(event["payload"]["confidence"]) < 0.7
+        and float(event["payload"]["confidence"]) < _LOW_CONFIDENCE
     ]
     validation_failures = [
         event for event in events
@@ -271,9 +271,56 @@ class VizServer:
     # Build the FastAPI app
     # ------------------------------------------------------------------
 
+    def _explain_response(self, body: dict[str, Any]) -> Any:
+        """POST /explain payload: the stored run explanation, or a 404 JSONResponse."""
+        from fastapi.responses import JSONResponse
+
+        session_id = body.get("session_id", "")
+        stored_session = self._metadata.get("session_id", "")
+        if session_id and stored_session and session_id != stored_session:
+            return JSONResponse(
+                status_code=404,
+                content={"error": f"session_id '{session_id}' not found; active session is '{stored_session}'"},
+            )
+        if self._run_explanation is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "No explanation available yet; run has not been finalized"},
+            )
+        return self._run_explanation
+
+    async def _serve_websocket(self, ws: WebSocket) -> None:
+        """One browser connection: sync current state, replay events, keep alive."""
+        from fastapi import WebSocketDisconnect
+
+        await ws.accept()
+        self._connections.append(ws)
+        # Send current state to late-joining browsers so they sync up
+        if self._metadata:
+            await _send_json(ws, {"type": "meta", "data": self._metadata})
+        if self._summary:
+            await _send_json(ws, {"type": "summary", "data": self._summary})
+        # Replay any events emitted before this browser connected
+        for event_msg in list(self._event_log):
+            if not await _send_json(ws, event_msg):
+                break
+        if self._graph_snapshot:
+            await _send_json(ws, {"type": "graph_state", "data": self._graph_snapshot})
+        if self._finalized_snapshot:
+            await _send_json(ws, {"type": "finalize", "data": self._finalized_snapshot})
+        try:
+            while True:
+                # Keep alive; client sends pings
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if ws in self._connections:
+                self._connections.remove(ws)
+
     def _build_app(self) -> Any:
         try:
-            from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+            from fastapi import FastAPI, WebSocket
             from fastapi.responses import HTMLResponse
             from fastapi.staticfiles import StaticFiles
         except ImportError as e:
@@ -296,47 +343,11 @@ class VizServer:
 
         @app.post("/explain")
         async def explain(body: dict[str, Any]) -> Any:
-            from fastapi.responses import JSONResponse
-            session_id = body.get("session_id", "")
-            stored_session = self._metadata.get("session_id", "")
-            if session_id and stored_session and session_id != stored_session:
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": f"session_id '{session_id}' not found; active session is '{stored_session}'"},
-                )
-            if self._run_explanation is None:
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": "No explanation available yet; run has not been finalized"},
-                )
-            return self._run_explanation
+            return self._explain_response(body)
 
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket) -> None:
-            await ws.accept()
-            self._connections.append(ws)
-            # Send current state to late-joining browsers so they sync up
-            if self._metadata:
-                await _send_json(ws, {"type": "meta", "data": self._metadata})
-            if self._summary:
-                await _send_json(ws, {"type": "summary", "data": self._summary})
-            # Replay any events emitted before this browser connected
-            for event_msg in list(self._event_log):
-                if not await _send_json(ws, event_msg):
-                    break
-            if self._graph_snapshot:
-                await _send_json(ws, {"type": "graph_state", "data": self._graph_snapshot})
-            if self._finalized_snapshot:
-                await _send_json(ws, {"type": "finalize", "data": self._finalized_snapshot})
-            try:
-                while True:
-                    # Keep alive; client sends pings
-                    await ws.receive_text()
-            except WebSocketDisconnect:
-                pass
-            finally:
-                if ws in self._connections:
-                    self._connections.remove(ws)
+            await self._serve_websocket(ws)
 
         return app
 

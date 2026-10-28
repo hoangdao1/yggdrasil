@@ -52,8 +52,10 @@ class SequenceBackend(LLMBackend):
         continuation = list(messages)
         if response.tool_calls:
             continuation.append({"role": "assistant", "content": str(response.tool_calls)})
-        for tool_result in tool_results:
-            continuation.append({"role": "tool", "content": tool_result.content})
+        continuation.extend(
+            {"role": "tool", "content": tool_result.content}
+            for tool_result in tool_results
+        )
         return continuation
 
 

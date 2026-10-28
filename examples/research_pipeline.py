@@ -34,10 +34,8 @@ from yggdrasil_lm.core.nodes import PromptNode
 from yggdrasil_lm.tools.registry import default_registry
 
 
-async def build_graph(store: NetworkXGraphStore) -> str:
-    """Construct the research pipeline graph. Returns the entry agent node_id."""
-
-    # ── 1. Prompt nodes ───────────────────────────────────────────────────
+def _prompt_nodes() -> tuple[PromptNode, PromptNode]:
+    """System prompts for the researcher and synthesizer agents."""
     researcher_prompt = PromptNode(
         name="ResearcherSystemPrompt",
         description="System prompt for the Researcher agent",
@@ -59,9 +57,12 @@ async def build_graph(store: NetworkXGraphStore) -> str:
             "and actionable next steps. Use markdown formatting."
         ),
     )
+    return researcher_prompt, synthesizer_prompt
 
-    # ── 2. Context node (static knowledge) ───────────────────────────────
-    python_docs_ctx = ContextNode(
+
+def _static_context() -> ContextNode:
+    """Static background knowledge injected into the researcher."""
+    return ContextNode(
         name="Python Ecosystem Overview",
         description="Background context about the Python ecosystem",
         content=(
@@ -75,8 +76,10 @@ async def build_graph(store: NetworkXGraphStore) -> str:
         token_count=100,
     )
 
-    # ── 3. Tool node ──────────────────────────────────────────────────────
-    web_search_tool = ToolNode(
+
+def _web_search_tool() -> ToolNode:
+    """The web_search ToolNode with its JSON input schema."""
+    return ToolNode(
         name="web_search",
         description=(
             "Search the web for current information on any topic. "
@@ -101,7 +104,9 @@ async def build_graph(store: NetworkXGraphStore) -> str:
         is_async=True,
     )
 
-    # ── 4. Agent nodes ────────────────────────────────────────────────────
+
+def _agent_nodes() -> tuple[AgentNode, AgentNode]:
+    """(researcher, synthesizer) agents; the researcher always hands off to the synthesizer."""
     synthesizer = AgentNode(
         name="SynthesizerAgent",
         description="Synthesises research findings into a structured report",
@@ -118,6 +123,15 @@ async def build_graph(store: NetworkXGraphStore) -> str:
             "default":          synthesizer.node_id,  # always hand off to synthesizer
         },
     )
+    return researcher, synthesizer
+
+
+async def build_graph(store: NetworkXGraphStore) -> str:
+    """Construct the research pipeline graph. Returns the entry agent node_id."""
+    researcher_prompt, synthesizer_prompt = _prompt_nodes()
+    python_docs_ctx = _static_context()
+    web_search_tool = _web_search_tool()
+    researcher, synthesizer = _agent_nodes()
 
     # ── 5. Store all nodes ────────────────────────────────────────────────
     for node in [
@@ -178,10 +192,7 @@ async def run_pipeline(query: str, backend=None) -> None:
     print("\n--- Final Output ---")
     for node_id, output in ctx.outputs.items():
         node = await store.get_node(node_id)
-        if node:
-            label = f"{node.name} ({node.node_type})"
-        else:
-            label = node_id
+        label = f"{node.name} ({node.node_type})" if node else node_id
         if isinstance(output, dict) and "text" in output:
             print(f"\n[{label}]\n{output['text']}\n")
 

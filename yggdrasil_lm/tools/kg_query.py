@@ -115,15 +115,18 @@ async def facts(input: dict[str, Any], *, store: GraphStore) -> dict[str, Any]:
             label_cache[nid] = _label(await store.get_node(nid), use_names)
         return label_cache[nid]
 
-    for e in await store.list_edges():
-        etype = str(e.edge_type)
-        if wanted is not None and etype not in wanted:
-            continue
-        out.append([etype.lower(), await lbl(e.src_id), await lbl(e.dst_id)])
+    edge_facts = [
+        [str(e.edge_type).lower(), await lbl(e.src_id), await lbl(e.dst_id)]
+        for e in await store.list_edges()
+        if wanted is None or str(e.edge_type) in wanted
+    ]
+    out.extend(edge_facts)
 
     if input.get("include_nodes"):
-        for n in await store.list_nodes():
-            out.append([str(n.node_type), _label(n, use_names)])
+        out.extend(
+            [str(n.node_type), _label(n, use_names)]
+            for n in await store.list_nodes()
+        )
 
     return {"facts": out, "count": len(out)}
 

@@ -336,9 +336,25 @@ These are all runnable and tested — read before building:
 | Forgetting `asyncio.run(main())` | All execution is async |
 | Passing `strategy="parallel"` for single-agent | Default `"sequential"` works for all cases |
 
+## Code style gates (enforced, not optional)
+
+All code must be declarative and free of monster functions. `make check` fails
+on violations; CI runs it on every PR.
+
+- **Declarative**: comprehensions over accumulator loops, `any()`/`all()` over
+  flag loops, `contextlib.suppress` over `try/except/pass`, data-driven dispatch
+  (dicts of small functions) over long `match`/`if` chains.
+- **Function budgets**: ≤80 body lines, ≤50 statements, ≤12 branches, ≤6 returns,
+  ≤8 args, cyclomatic ≤10. Extract a focused private helper when a budget is hit.
+- **No magic values in comparisons**: name them (`_LOW_CONFIDENCE_THRESHOLD`).
+- Full guide with examples: `CONTRIBUTING.md` → "Code Style: Declarative by Default".
+- AST gates live in `tests/test_code_quality.py`; ruff rule families in
+  `[tool.ruff.lint]` in `pyproject.toml` (C4, PERF, SIM, PLR, C901).
+
 ## Run tests
 
 ```bash
+make check                    # ruff + mypy + pytest — the full gate
 pytest                        # all tests
 pytest tests/test_app_api.py  # builder API tests
 pytest tests/test_examples.py # example smoke tests

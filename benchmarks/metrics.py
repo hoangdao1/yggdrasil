@@ -96,7 +96,7 @@ def print_table(results: list[RunMetrics], task_name: str) -> None:
     """Print a fixed-width comparison table for one task's results."""
     sep_char = "─"
 
-    header_row = {k: label for k, label in _HEADERS}
+    header_row = dict(_HEADERS)
     rows = [_fmt_row(m) for m in results]
 
     # Compute column widths from data

@@ -8,6 +8,8 @@ from yggdrasil_lm.observability import explain_run
 from yggdrasil_lm.retrieval import semantic_search
 from yggdrasil_lm.trace_ui import inspect_trace, print_trace
 
+EXPECTED_CONTEXT_WEIGHT = 0.8  # weight used when connecting a context node
+
 
 class StubBackend(LLMBackend):
     async def chat(self, model, system, messages, tools, max_tokens=8096) -> LLMResponse:
@@ -60,7 +62,7 @@ async def test_graph_app_connects_context_and_tool():
     ctx_edge = await app.connect_context(agent, context, weight=0.8)
 
     assert tool_edge.src_id == agent.node_id
-    assert ctx_edge.weight == 0.8
+    assert ctx_edge.weight == EXPECTED_CONTEXT_WEIGHT
 
 
 def test_helper_constructors_create_nodes():

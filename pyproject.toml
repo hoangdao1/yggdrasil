@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "yggdrasil-lm"
-version = "0.1.21"
+version = "0.1.22"
 description = "Yggdrasil: a Python framework for graph-native agent orchestration"
 readme = "README.md"
 license = { text = "MIT" }
@@ -102,6 +102,22 @@ line-length = 100
 # ValueError is the public contract for invalid input, wrong-shape included;
 # callers and tests catch it, so isinstance checks must not switch to TypeError.
 ignore = ["TRY004"]
+# Declarative style + function-quality gates:
+# - C4    : prefer comprehensions / declarative collection construction
+# - PERF  : accumulator loops -> comprehensions, any()/all(), dict comps
+# - SIM   : flatten control flow (contextlib.suppress, ternaries, ...)
+# - PLR   : pylint refactor family — function size/shape caps
+# - C901  : McCabe cyclomatic complexity cap
+extend-select = ["C4", "PERF", "SIM", "PLR", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-statements = 50
+max-branches = 12
+max-returns = 6
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

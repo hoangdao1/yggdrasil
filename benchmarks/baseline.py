@@ -20,9 +20,11 @@ Usage (standalone):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from benchmarks.metrics import RunMetrics
 from benchmarks.tasks import BenchmarkTask
@@ -43,6 +45,17 @@ class _SDKResult:
     cost_usd: float | None
     wall_ms: float
     error: str | None
+
+
+def _result_error(msg: Any, result_text: str) -> str | None:
+    """Classify a ResultMessage as an error string, or None for partial success."""
+    if not getattr(msg, "is_error", False):
+        return None
+    subtype = getattr(msg, "subtype", "unknown")
+    if subtype == "error_max_turns":
+        # Treat as partial success — we have intermediate output
+        return None
+    return f"sdk error ({subtype}): {result_text[:200]}"
 
 
 async def _sdk_query(
@@ -103,13 +116,7 @@ async def _sdk_query(
                 result_text = msg.result or ""
                 num_turns   = getattr(msg, "num_turns", 0) or 0
                 cost_usd    = getattr(msg, "total_cost_usd", None)
-                if getattr(msg, "is_error", False):
-                    subtype = getattr(msg, "subtype", "unknown")
-                    if subtype == "error_max_turns":
-                        # Treat as partial success — we have intermediate output
-                        pass
-                    else:
-                        error = f"sdk error ({subtype}): {result_text[:200]}"
+                error = _result_error(msg, result_text)
     except Exception as exc:  # noqa: BLE001 — any run failure is recorded in the metrics
         error = str(exc)[:300]
     wall_ms = (time.perf_counter() - t0) * 1000
@@ -153,10 +160,9 @@ async def run_baseline_single(
 
     passed = False
     if not r.error:
-        try:
+        # A crashing eval counts as a fail.
+        with contextlib.suppress(Exception):
             passed = task.eval_fn(r.text)
-        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
-            pass
 
     return RunMetrics(
         system="baseline-single",
@@ -247,10 +253,9 @@ async def run_baseline_multi(
 
     passed = False
     if not first_error:
-        try:
+        # A crashing eval counts as a fail.
+        with contextlib.suppress(Exception):
             passed = task.eval_fn(final_output)
-        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
-            pass
 
     return RunMetrics(
         system="baseline-multi",

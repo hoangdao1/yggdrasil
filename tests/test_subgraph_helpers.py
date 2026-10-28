@@ -10,6 +10,8 @@ from yggdrasil_lm.core.nodes import AgentNode, GraphNode
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.testing import StubBackend, end_turn, tool_use
 
+EXPECTED_BACKEND_CALLS = 2  # StubBackend records one call per turn
+
 # ---------------------------------------------------------------------------
 # Public testing module
 # ---------------------------------------------------------------------------
@@ -21,7 +23,7 @@ def test_stub_backend_returns_responses_in_order():
     r2 = asyncio.run(backend.chat("m", "", [], []))
     assert r1.text == "A"
     assert r2.text == "B"
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == EXPECTED_BACKEND_CALLS
 
 
 def test_stub_backend_loops_when_exhausted():
@@ -170,4 +172,4 @@ async def test_run_subgraph_replay_pattern():
     # Critic's verdict surfaces, extractor's claim does not.
     assert "HYPE" in ctx.outputs[sub.node_id]["text"]
     # StubBackend recorded both turns.
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == EXPECTED_BACKEND_CALLS

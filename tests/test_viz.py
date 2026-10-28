@@ -20,6 +20,15 @@ from yggdrasil_lm.core.nodes import AgentNode, ContextNode
 from yggdrasil_lm.core.store import NetworkXGraphStore
 from yggdrasil_lm.viz.server import VizServer, _event_to_dict, _store_to_snapshot, _summarize_events
 
+# Expected values reused across the viz assertions below.
+EXPECTED_DURATION_MS = 42      # duration_ms handed to _make_event
+EXPECTED_SCHEDULED_CALLS = 2   # run_coroutine_threadsafe invocations per publish
+THREE_EVENTS = 3               # _make_ctx(num_events=3)
+TWO_EVENTS = 2                 # _make_ctx(num_events=2)
+GRAPH_NODE_COUNT = 2           # one agent + one context node
+HTTP_OK = 200
+HTTP_NOT_FOUND = 404
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -87,7 +96,7 @@ class TestEventToDict:
         event = _make_event(parent_event_id="parent-123", duration_ms=42)
         d = _event_to_dict(event)
         assert d["parent_event_id"] == "parent-123"
-        assert d["duration_ms"] == 42
+        assert d["duration_ms"] == EXPECTED_DURATION_MS
 
     def test_event_id_present(self):
         event = _make_event()
@@ -184,7 +193,7 @@ class TestVizServerMetadata:
 
         with patch("asyncio.run_coroutine_threadsafe") as mock_rcts:
             server.set_metadata(session_id="s", query="q")
-            assert mock_rcts.call_count == 2
+            assert mock_rcts.call_count == EXPECTED_SCHEDULED_CALLS
             for call in mock_rcts.call_args_list:
                 assert call[0][1] is server._loop
                 call[0][0].close()
@@ -206,7 +215,7 @@ class TestVizServerPushEvent:
 
         with patch("asyncio.run_coroutine_threadsafe") as mock_rcts:
             server.push_event(event, ctx)
-            assert mock_rcts.call_count == 2
+            assert mock_rcts.call_count == EXPECTED_SCHEDULED_CALLS
             for call in mock_rcts.call_args_list:
                 assert call[0][1] is mock_loop
                 call[0][0].close()
@@ -286,8 +295,8 @@ class TestVizServerFinalize:
         assert data["query"] == "what is 2+2?"
         assert data["session_id"] == ctx.session_id
         assert data["hop_count"] == 0
-        assert len(data["events"]) == 3
-        assert data["summary"]["event_count"] == 3
+        assert len(data["events"]) == THREE_EVENTS
+        assert data["summary"]["event_count"] == THREE_EVENTS
 
     @pytest.mark.asyncio
     async def test_finalize_no_connections_no_error(self):
@@ -307,7 +316,7 @@ class TestVizServerFinalize:
         # Snapshot is now stored — a late-joining WebSocket can read it
         assert server._finalized_snapshot is not None
         assert server._finalized_snapshot["query"] == "late joiner test"
-        assert len(server._finalized_snapshot["events"]) == 2
+        assert len(server._finalized_snapshot["events"]) == TWO_EVENTS
 
     @pytest.mark.asyncio
     async def test_finalize_events_are_serializable(self):
@@ -322,7 +331,7 @@ class TestVizServerFinalize:
 
         raw = ws.send_text.call_args[0][0]
         parsed = json.loads(raw)  # should not raise
-        assert len(parsed["data"]["events"]) == 2
+        assert len(parsed["data"]["events"]) == TWO_EVENTS
 
     @pytest.mark.asyncio
     async def test_finalize_includes_graph_state_when_store_provided(self):
@@ -342,7 +351,7 @@ class TestVizServerFinalize:
 
         sent = json.loads(ws.send_text.call_args_list[-1][0][0])
         graph_state = sent["data"]["graph_state"]
-        assert graph_state["summary"]["node_count"] == 2
+        assert graph_state["summary"]["node_count"] == GRAPH_NODE_COUNT
         assert graph_state["summary"]["edge_count"] == 1
         assert graph_state["summary"]["node_type_counts"]["agent"] == 1
         assert graph_state["summary"]["node_type_counts"]["context"] == 1
@@ -580,7 +589,7 @@ class TestVizServerHttpRoutes:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/explain", json={"session_id": ctx.session_id})
 
-        assert resp.status_code == 200
+        assert resp.status_code == HTTP_OK
         data = resp.json()
         assert data["session_id"] == ctx.session_id
         assert data["query"] == "explain me"
@@ -595,7 +604,7 @@ class TestVizServerHttpRoutes:
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/explain", json={"session_id": "any-id"})
-        assert resp.status_code == 404
+        assert resp.status_code == HTTP_NOT_FOUND
         assert "finalized" in resp.json()["error"]
 
     @pytest.mark.asyncio
@@ -609,7 +618,7 @@ class TestVizServerHttpRoutes:
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/explain", json={"session_id": "wrong-session-id"})
-        assert resp.status_code == 404
+        assert resp.status_code == HTTP_NOT_FOUND
         assert "not found" in resp.json()["error"]
 
     @pytest.mark.asyncio
@@ -623,7 +632,7 @@ class TestVizServerHttpRoutes:
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/explain", json={})
-        assert resp.status_code == 200
+        assert resp.status_code == HTTP_OK
         assert resp.json()["query"] == "no session filter"
 
     @pytest.mark.asyncio
@@ -633,7 +642,7 @@ class TestVizServerHttpRoutes:
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/health")
-        assert resp.status_code == 200
+        assert resp.status_code == HTTP_OK
         assert resp.json() == {"status": "ok"}
 
     @pytest.mark.asyncio
@@ -643,7 +652,7 @@ class TestVizServerHttpRoutes:
         app = server._build_app()
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/")
-        assert resp.status_code == 200
+        assert resp.status_code == HTTP_OK
         assert "text/html" in resp.headers["content-type"]
         assert "/static/js/main.js" in resp.text
 
@@ -657,9 +666,9 @@ class TestVizServerHttpRoutes:
             js_resp = await client.get("/static/js/main.js")
             css_resp = await client.get("/static/styles.css")
 
-        assert js_resp.status_code == 200
+        assert js_resp.status_code == HTTP_OK
         assert "javascript" in js_resp.headers["content-type"] or js_resp.text
-        assert css_resp.status_code == 200
+        assert css_resp.status_code == HTTP_OK
         assert "text/css" in css_resp.headers["content-type"]
 
 

@@ -17,6 +17,9 @@ from yggdrasil_lm.media import (
 )
 from yggdrasil_lm.testing import StubBackend, end_turn
 
+EXPECTED_QUERY_BLOCKS = 3   # text prompt + two images
+EXPECTED_IMAGE_BLOCKS = 2   # inline image + connected image context
+
 # ---------------------------------------------------------------------------
 # media.py helpers
 # ---------------------------------------------------------------------------
@@ -73,7 +76,7 @@ class TestImageHelpers:
         img1 = image_from_url("https://example.com/a.jpg")
         img2 = image_from_url("https://example.com/b.jpg")
         result = build_query("Compare these.", img1, img2)
-        assert len(result) == 3
+        assert len(result) == EXPECTED_QUERY_BLOCKS
         assert result[0]["type"] == "text"
         assert result[1] == img1
         assert result[2] == img2
@@ -214,7 +217,7 @@ class TestVisualRAG:
         user_msg = next(m for m in messages if m["role"] == "user")
         assert isinstance(user_msg["content"], list)
         image_blocks = [b for b in user_msg["content"] if b.get("type") == "image"]
-        assert len(image_blocks) == 2
+        assert len(image_blocks) == EXPECTED_IMAGE_BLOCKS
 
     @pytest.mark.asyncio
     async def test_text_context_still_in_system_prompt(self):

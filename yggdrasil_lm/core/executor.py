@@ -170,6 +170,19 @@ _CONTINUATION_NUDGE = (
 # "Now let me …" / "Next, I'll …" / "Let me …". Kept narrow so a real answer that
 # happens to end in a colon-led list is not mistaken for one (it would have content
 # after the colon).
+# Anything longer than this is a substantive answer, never a lead-in.
+_NARRATION_MAX_LEAD_IN_CHARS = 400
+
+# Routing confidence below this earns a "specify the agent explicitly" warning.
+_LOW_CONFIDENCE_THRESHOLD = 0.7
+
+# Recency buckets for context scoring.
+_HOUR_SECONDS = 3600
+_DAY_SECONDS = 86400
+
+# tool_call payload preview width in the plain-text trace renderer.
+_TOOL_INPUT_PREVIEW_CHARS = 60
+
 _NARRATION_LEAD_IN = re.compile(
     r"""^\s*(
           (now\s+)?let(\s+me|'s)\b
@@ -191,7 +204,7 @@ def looks_like_narration_only(text: str, reasoning: str = "") -> bool:
         # Nothing in `content`. Only a nudge-worthy non-answer if the model was not
         # simply thinking out loud to a real conclusion in the reasoning channel.
         return not (reasoning or "").strip()
-    if len(body) > 400:
+    if len(body) > _NARRATION_MAX_LEAD_IN_CHARS:
         return False                      # substantive output, not a lead-in
     return body.endswith(":") and _NARRATION_LEAD_IN.search(body) is not None
 
@@ -226,6 +239,17 @@ def _clip_for_history(text: str) -> str:
     return text[:_HISTORY_ELIDE_CHARS] + f" {_HISTORY_ELIDE_MARK} (+{len(text) - _HISTORY_ELIDE_CHARS} chars)"
 
 
+def _shrink_tool_result_content(block: dict[str, Any]) -> None:
+    """Clip a tool_result block's inner content in place (string or block list)."""
+    inner = block.get("content")
+    if isinstance(inner, str):
+        block["content"] = _clip_for_history(inner)
+    elif isinstance(inner, list):
+        for ib in inner:
+            if isinstance(ib, dict) and isinstance(ib.get("text"), str):
+                ib["text"] = _clip_for_history(ib["text"])
+
+
 def _shrink_message_content(msg: dict[str, Any]) -> None:
     """Shrink one old message's bulky content IN PLACE, preserving tool_use/tool_call
     blocks (pairing) and roles. Handles both Anthropic (content = str | list of blocks
@@ -241,13 +265,7 @@ def _shrink_message_content(msg: dict[str, Any]) -> None:
             if bt == "text" and isinstance(block.get("text"), str):
                 block["text"] = _clip_for_history(block["text"])
             elif bt == "tool_result":
-                inner = block.get("content")
-                if isinstance(inner, str):
-                    block["content"] = _clip_for_history(inner)
-                elif isinstance(inner, list):
-                    for ib in inner:
-                        if isinstance(ib, dict) and isinstance(ib.get("text"), str):
-                            ib["text"] = _clip_for_history(ib["text"])
+                _shrink_tool_result_content(block)
             # tool_use / other blocks are left intact (needed for tool pairing).
     # OpenAI 'tool' role messages carry their payload in 'content' (handled above);
     # assistant 'tool_calls' are left untouched.
@@ -332,7 +350,7 @@ class RoutingDecision(NamedTuple):
     @property
     def low_confidence_warning(self) -> str | None:
         """Non-None when confidence is below 0.7."""
-        if self.confidence < 0.7:
+        if self.confidence < _LOW_CONFIDENCE_THRESHOLD:
             return (
                 f"Low-confidence routing ({self.confidence:.0%}) — "
                 "consider specifying the agent explicitly."
@@ -626,7 +644,7 @@ class ContextNavigator:
             if self.exclude_stale_facts and not node.is_fact_valid:
                 continue
             direct_context_edges[node.node_id] = edge
-            selection = self._score_context(
+            seed_map[node.node_id] = self._score_context(
                 node,
                 query=query,
                 query_vec=query_vec,
@@ -637,53 +655,15 @@ class ContextNavigator:
                 path_weight=edge.weight,
                 session_id=session_id,
             )
-            seed_map[node.node_id] = selection
 
-        if query_vec is not None:
-            semantic_hits = await store.vector_search(
-                query_vec,
-                node_types=[NodeType.CONTEXT],
-                top_k=self.semantic_top_k,
-            )
-            for rank, (node, _score) in enumerate(semantic_hits):
-                if not isinstance(node, ContextNode) or node.node_id in seed_map or not node.is_valid:
-                    continue
-                if self.exclude_stale_facts and not node.is_fact_valid:
-                    continue
-                selection = self._score_context(
-                    node,
-                    query=query,
-                    query_vec=query_vec,
-                    direct_edge=direct_context_edges.get(node.node_id),
-                    source="semantic",
-                    hops=0,
-                    path=[node.node_id],
-                    path_weight=max(0.5, 1.0 - rank * 0.03),
-                    session_id=session_id,
-                )
-                seed_map[node.node_id] = selection
-
-        if session_id:
-            runtime_nodes = await store.list_nodes(node_type=NodeType.CONTEXT, group_id=session_id)
-            for node in runtime_nodes:
-                if not isinstance(node, ContextNode):
-                    continue
-                if node.attributes.get("origin") != "runtime":
-                    continue
-                selection = self._score_context(
-                    node,
-                    query=query,
-                    query_vec=query_vec,
-                    direct_edge=direct_context_edges.get(node.node_id),
-                    source="runtime",
-                    hops=0,
-                    path=[node.node_id],
-                    path_weight=1.0,
-                    session_id=session_id,
-                )
-                existing = seed_map.get(node.node_id)
-                if existing is None or selection.score > existing.score:
-                    seed_map[node.node_id] = selection
+        await self._add_semantic_selections(
+            store, seed_map, direct_context_edges,
+            query=query, query_vec=query_vec, session_id=session_id,
+        )
+        await self._add_runtime_selections(
+            store, seed_map, direct_context_edges,
+            query=query, query_vec=query_vec, session_id=session_id,
+        )
 
         expanded = await self._expand_contexts(
             store,
@@ -696,6 +676,75 @@ class ContextNavigator:
 
         ranked = sorted(expanded.values(), key=lambda s: s.score, reverse=True)
         return self._pack_contexts(ranked)
+
+    async def _add_semantic_selections(
+        self,
+        store: GraphStore,
+        seed_map: dict[str, ContextSelection],
+        direct_context_edges: dict[str, Edge],
+        *,
+        query: str | None,
+        query_vec: list[float] | None,
+        session_id: str | None,
+    ) -> None:
+        """Seed semantic-hit ContextNodes into `seed_map` (skipping already-seeded)."""
+        if query_vec is None:
+            return
+        semantic_hits = await store.vector_search(
+            query_vec,
+            node_types=[NodeType.CONTEXT],
+            top_k=self.semantic_top_k,
+        )
+        for rank, (node, _score) in enumerate(semantic_hits):
+            if not isinstance(node, ContextNode) or node.node_id in seed_map or not node.is_valid:
+                continue
+            if self.exclude_stale_facts and not node.is_fact_valid:
+                continue
+            seed_map[node.node_id] = self._score_context(
+                node,
+                query=query,
+                query_vec=query_vec,
+                direct_edge=direct_context_edges.get(node.node_id),
+                source="semantic",
+                hops=0,
+                path=[node.node_id],
+                path_weight=max(0.5, 1.0 - rank * 0.03),
+                session_id=session_id,
+            )
+
+    async def _add_runtime_selections(
+        self,
+        store: GraphStore,
+        seed_map: dict[str, ContextSelection],
+        direct_context_edges: dict[str, Edge],
+        *,
+        query: str | None,
+        query_vec: list[float] | None,
+        session_id: str | None,
+    ) -> None:
+        """Seed the session's runtime-materialised ContextNodes into `seed_map`."""
+        if not session_id:
+            return
+        runtime_nodes = await store.list_nodes(node_type=NodeType.CONTEXT, group_id=session_id)
+        for node in runtime_nodes:
+            if not isinstance(node, ContextNode):
+                continue
+            if node.attributes.get("origin") != "runtime":
+                continue
+            selection = self._score_context(
+                node,
+                query=query,
+                query_vec=query_vec,
+                direct_edge=direct_context_edges.get(node.node_id),
+                source="runtime",
+                hops=0,
+                path=[node.node_id],
+                path_weight=1.0,
+                session_id=session_id,
+            )
+            existing = seed_map.get(node.node_id)
+            if existing is None or selection.score > existing.score:
+                seed_map[node.node_id] = selection
 
     async def _expand_contexts(
         self,
@@ -777,7 +826,7 @@ class ContextNavigator:
 
         return packed
 
-    def _score_context(
+    def _score_context(  # noqa: PLR0913 — each parameter is a distinct scoring input
         self,
         ctx: ContextNode,
         *,
@@ -849,9 +898,9 @@ class ContextNavigator:
 
     def _recency_bonus(self, ctx: ContextNode) -> float:
         age_s = (datetime.now(UTC) - ctx.valid_at).total_seconds()
-        if age_s <= 3600:
+        if age_s <= _HOUR_SECONDS:
             return self.recency_weight
-        if age_s <= 86400:
+        if age_s <= _DAY_SECONDS:
             return self.recency_weight / 2
         return 0.0
 
@@ -1118,35 +1167,44 @@ class ResumeReadiness:
 # Coerce only where the declared schema states the target type, and only from a
 # lossless textual form. Anything already the right type is untouched; nothing is
 # invented; an undeclared key is left exactly as sent (validation still judges it).
-_TRUE_TOKENS = frozenset({"true", "yes", "1", "on"})
-_FALSE_TOKENS = frozenset({"false", "no", "0", "off"})
+# Token spellings a local model may use for JSON booleans in stringified args.
+_BOOLEAN_BY_TOKEN: dict[str, bool] = {
+    "true": True, "yes": True, "1": True, "on": True,
+    "false": False, "no": False, "0": False, "off": False,
+}
+_SCALAR_PARSERS: dict[str, Callable[[str], Any]] = {"integer": int, "number": float}
 
 
 def _coerce_scalar(value: Any, target: str) -> Any:
     """Best-effort scalar coercion; returns `value` unchanged when unsure."""
-    if not isinstance(value, str):
+    if target == "boolean":
+        if isinstance(value, str):
+            return _BOOLEAN_BY_TOKEN.get(value.strip().lower(), value)
         return value
-    text = value.strip()
-    match target:
-        case "integer":
-            try:
-                return int(text)
-            except ValueError:
-                return value
-        case "number":
-            try:
-                return float(text)
-            except ValueError:
-                return value
-        case "boolean":
-            low = text.lower()
-            if low in _TRUE_TOKENS:
-                return True
-            if low in _FALSE_TOKENS:
-                return False
-            return value
-        case _:
-            return value
+    parser = _SCALAR_PARSERS.get(target)
+    if parser is None or not isinstance(value, str):
+        return value
+    try:
+        return parser(value.strip())
+    except ValueError:
+        return value
+
+
+def _coerce_array_value(value: Any, spec: dict[str, Any]) -> Any:
+    """Coerce a value declared as `array`: CSV string -> items, lone scalar -> [value].
+
+    Item types declared as integer/number/boolean get per-item scalar coercion.
+    """
+    if isinstance(value, str):
+        new = [p for p in (part.strip() for part in value.split(",")) if p]
+    elif value is not None:
+        new = [value]           # a lone scalar for a list-typed param
+    else:
+        return value
+    item_type = (spec.get("items") or {}).get("type")
+    if item_type in ("integer", "number", "boolean"):
+        new = [_coerce_scalar(v, item_type) for v in new]
+    return new
 
 
 def coerce_to_schema(payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
@@ -1167,14 +1225,7 @@ def coerce_to_schema(payload: dict[str, Any], schema: dict[str, Any]) -> dict[st
         declared = spec.get("type")
         new = value
         if declared == "array" and not isinstance(value, list):
-            if isinstance(value, str):
-                parts = [p.strip() for p in value.split(",")]
-                new = [p for p in parts if p]
-            elif value is not None:
-                new = [value]           # a lone scalar for a list-typed param
-            item_type = (spec.get("items") or {}).get("type")
-            if isinstance(new, list) and item_type in ("integer", "number", "boolean"):
-                new = [_coerce_scalar(v, item_type) for v in new]
+            new = _coerce_array_value(value, spec)
         elif declared in ("integer", "number", "boolean"):
             new = _coerce_scalar(value, declared)
         if new is not value:
@@ -1182,6 +1233,36 @@ def coerce_to_schema(payload: dict[str, Any], schema: dict[str, Any]) -> dict[st
                 out = dict(payload)
             out[key] = new
     return out if out is not None else payload
+
+
+# Declarative dispatch table for constraint/route rule operators.
+_RULE_COMPARATORS: dict[str, Callable[[Any, Any], bool]] = {
+    "exists":     lambda left, right: left is not None,
+    "truthy":     lambda left, right: bool(left),
+    "contains":   lambda left, right: left is not None and right in left,
+    "not_equals": lambda left, right: bool(left != right),
+    "in":         lambda left, right: right is not None and left in right,
+    "regex":      lambda left, right: (
+        isinstance(left, str) and isinstance(right, str) and re.search(right, left) is not None
+    ),
+    "gt":         lambda left, right: bool(left > right),
+    "gte":        lambda left, right: bool(left >= right),
+    "lt":         lambda left, right: bool(left < right),
+    "lte":        lambda left, right: bool(left <= right),
+}
+
+
+@dataclass
+class _AgentTurnLoop:
+    """Mutable per-invocation state for GraphExecutor._execute_agent's turn loop."""
+
+    messages:              list[dict[str, Any]]
+    max_tokens:            int
+    iterations:            int = 0
+    token_escalations:     int = 0
+    tool_call_corrections: int = 0
+    continuation_nudges:   int = 0
+    completion_nudges:     int = 0
 
 
 class GraphExecutor:
@@ -1266,7 +1347,7 @@ class GraphExecutor:
     # Public entry points
     # ------------------------------------------------------------------
 
-    async def run(
+    async def run(  # noqa: PLR0913, PLR0917 — public execution entry point; options are distinct axes
         self,
         entry_node_id: str,
         query: QueryContent,
@@ -1403,7 +1484,7 @@ class GraphExecutor:
             unrecoverable=unrecoverable,
         )
 
-    async def batch(
+    async def batch(  # noqa: PLR0913 — deprecated public API; signature kept stable
         self,
         agent_node_id: str,
         items: list[Any],
@@ -1577,29 +1658,10 @@ class GraphExecutor:
                 return state.data
 
     def _compare_values(self, operator: str, left: Any, right: Any) -> bool:
-        match operator:
-            case "exists":
-                return left is not None
-            case "truthy":
-                return bool(left)
-            case "contains":
-                return left is not None and right in left
-            case "not_equals":
-                return bool(left != right)
-            case "in":
-                return left in right if right is not None else False
-            case "regex":
-                return isinstance(left, str) and isinstance(right, str) and re.search(right, left) is not None
-            case "gt":
-                return bool(left > right)
-            case "gte":
-                return bool(left >= right)
-            case "lt":
-                return bool(left < right)
-            case "lte":
-                return bool(left <= right)
-            case _:
-                return bool(left == right)
+        comparator = _RULE_COMPARATORS.get(operator)
+        if comparator is None:
+            return bool(left == right)   # unknown operator falls back to equality
+        return comparator(left, right)
 
     def _evaluate_constraint_rule(
         self,
@@ -1789,6 +1851,36 @@ class GraphExecutor:
             },
         )
 
+    def _validate_object_schema(
+        self,
+        payload: Any,
+        schema: dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        """Validate an `object`-typed payload: shape, required keys, property types."""
+        if not isinstance(payload, dict):
+            raise ValueError(f"{label} must be an object")
+        for key in schema.get("required", []):
+            if key not in payload:
+                raise ValueError(f"{label} missing required field {key!r}")
+        for key, subschema in schema.get("properties", {}).items():
+            if key in payload:
+                self._validate_against_schema(payload[key], subschema, label=f"{label}.{key}")
+
+    def _validate_array_schema(
+        self,
+        payload: Any,
+        schema: dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        """Validate an `array`-typed payload: shape and per-item recursion."""
+        if not isinstance(payload, list):
+            raise ValueError(f"{label} must be an array")
+        for idx, item in enumerate(payload):
+            self._validate_against_schema(item, schema.get("items", {}), label=f"{label}[{idx}]")
+
     def _validate_against_schema(
         self,
         payload: Any,
@@ -1801,20 +1893,9 @@ class GraphExecutor:
         schema_type = schema.get("type")
         match schema_type:
             case "object":
-                if not isinstance(payload, dict):
-                    raise ValueError(f"{label} must be an object")
-                required = schema.get("required", [])
-                for key in required:
-                    if key not in payload:
-                        raise ValueError(f"{label} missing required field {key!r}")
-                for key, subschema in schema.get("properties", {}).items():
-                    if key in payload:
-                        self._validate_against_schema(payload[key], subschema, label=f"{label}.{key}")
+                self._validate_object_schema(payload, schema, label=label)
             case "array":
-                if not isinstance(payload, list):
-                    raise ValueError(f"{label} must be an array")
-                for idx, item in enumerate(payload):
-                    self._validate_against_schema(item, schema.get("items", {}), label=f"{label}[{idx}]")
+                self._validate_array_schema(payload, schema, label=label)
             case "string" if not isinstance(payload, str):
                 raise ValueError(f"{label} must be a string")
             case "integer" if not isinstance(payload, int):
@@ -1973,8 +2054,8 @@ class GraphExecutor:
     # Topological (DAG waves)
     # ------------------------------------------------------------------
 
-    async def _run_topological(self, entry_node_id: str, ctx: ExecutionContext) -> None:
-        """Execute a DAG in topological order using stdlib graphlib."""
+    async def _dependency_map(self, entry_node_id: str) -> dict[str, set[str]]:
+        """Map every node reachable from `entry_node_id` to its DELEGATES_TO prerequisites."""
         dep_map: dict[str, set[str]] = {}
         visited: set[str] = set()
         queue = [entry_node_id]
@@ -1991,14 +2072,72 @@ class GraphExecutor:
                 if e.dst_id not in visited:
                     queue.append(e.dst_id)
 
+        await self._add_transform_dependencies(dep_map)
+        return dep_map
+
+    async def _add_transform_dependencies(self, dep_map: dict[str, set[str]]) -> None:
+        """Wire TransformNode input_keys into the dependency map as extra prerequisites."""
         for nid in list(dep_map):
             node = await self.store.get_node(nid)
             if isinstance(node, TransformNode) and node.input_keys:
-                for key in node.input_keys:
-                    if key in dep_map:
-                        dep_map[nid].add(key)
+                dep_map[nid].update(key for key in node.input_keys if key in dep_map)
 
-        sorter = graphlib.TopologicalSorter(dep_map)
+    def _claim_ready_nodes(
+        self,
+        sorter: graphlib.TopologicalSorter[str],
+        ctx: ExecutionContext,
+    ) -> list[str]:
+        """Pop the ready set, marking already-completed (resume) nodes as done."""
+        ready = list(sorter.get_ready())
+        # Skip nodes whose output is already cached in ctx.outputs (resume support:
+        # re-entering from the main entry skips previously completed nodes).
+        for nid in ready:
+            if nid in ctx.outputs:
+                sorter.done(nid)
+        return [nid for nid in ready if nid not in ctx.outputs]
+
+    async def _execute_wave(
+        self,
+        sorter: graphlib.TopologicalSorter[str],
+        ready: list[str],
+        ctx: ExecutionContext,
+        wave: int,
+    ) -> None:
+        """Run one topological wave concurrently and record outputs + hop events."""
+        nodes = list(await asyncio.gather(*[self.store.get_node(nid) for nid in ready]))
+
+        hop_events = []
+        valid_nodes = [(nid, n) for nid, n in zip(ready, nodes) if n is not None]
+        for nid, n in valid_nodes:
+            ctx.hop_count += 1
+            hop_event = self._emit(ctx, "hop", nid, n.name or "", payload={
+                "hop":       ctx.hop_count,
+                "node_type": str(n.node_type),
+                "summary":   "",
+                "wave":      wave,
+            })
+            hop_events.append(hop_event)
+
+        t0 = time.monotonic()
+        results = await asyncio.gather(*[
+            self._execute_node(n, ctx, parent_event_id=he.event_id)
+            for (_, n), he in zip(valid_nodes, hop_events)
+        ])
+        wave_ms = int((time.monotonic() - t0) * 1000)
+
+        for (nid, _), result, hop_event in zip(valid_nodes, results, hop_events):
+            # Don't store a paused subgraph's output — it will re-run on resume.
+            if not ctx.is_paused():
+                ctx.outputs[nid] = result
+                ctx.state.data["_last_node_id"] = nid
+                ctx.state.data["_last_output"] = result
+            hop_event.payload["summary"] = _summarise(result)
+            hop_event.payload["wave_ms"] = wave_ms
+            sorter.done(nid)
+
+    async def _run_topological(self, entry_node_id: str, ctx: ExecutionContext) -> None:
+        """Execute a DAG in topological order using stdlib graphlib."""
+        sorter = graphlib.TopologicalSorter(await self._dependency_map(entry_node_id))
         sorter.prepare()
 
         wave = 0
@@ -2008,13 +2147,7 @@ class GraphExecutor:
             if ctx.hop_count >= ctx.max_hops:
                 return
             wave += 1
-            ready = list(sorter.get_ready())
-            # Skip nodes whose output is already cached in ctx.outputs (resume support:
-            # re-entering from the main entry skips previously completed nodes).
-            already_done = [nid for nid in ready if nid in ctx.outputs]
-            for nid in already_done:
-                sorter.done(nid)
-            ready = [nid for nid in ready if nid not in ctx.outputs]
+            ready = self._claim_ready_nodes(sorter, ctx)
             if not ready:
                 continue
             remaining = max(ctx.max_hops - ctx.hop_count, 0)
@@ -2022,36 +2155,7 @@ class GraphExecutor:
                 return
             if len(ready) > remaining:
                 ready = ready[:remaining]
-            nodes = list(await asyncio.gather(*[self.store.get_node(nid) for nid in ready]))
-
-            hop_events = []
-            valid_nodes = [(nid, n) for nid, n in zip(ready, nodes) if n is not None]
-            for nid, n in valid_nodes:
-                ctx.hop_count += 1
-                hop_event = self._emit(ctx, "hop", nid, n.name or "", payload={
-                    "hop":       ctx.hop_count,
-                    "node_type": str(n.node_type),
-                    "summary":   "",
-                    "wave":      wave,
-                })
-                hop_events.append(hop_event)
-
-            t0 = time.monotonic()
-            results = await asyncio.gather(*[
-                self._execute_node(n, ctx, parent_event_id=he.event_id)
-                for (_, n), he in zip(valid_nodes, hop_events)
-            ])
-            wave_ms = int((time.monotonic() - t0) * 1000)
-
-            for (nid, _), result, hop_event in zip(valid_nodes, results, hop_events):
-                # Don't store a paused subgraph's output — it will re-run on resume.
-                if not ctx.is_paused():
-                    ctx.outputs[nid] = result
-                    ctx.state.data["_last_node_id"] = nid
-                    ctx.state.data["_last_output"] = result
-                hop_event.payload["summary"] = _summarise(result)
-                hop_event.payload["wave_ms"] = wave_ms
-                sorter.done(nid)
+            await self._execute_wave(sorter, ready, ctx, wave)
 
     # ------------------------------------------------------------------
     # Node dispatch
@@ -2063,39 +2167,48 @@ class GraphExecutor:
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
     ) -> Any:
+        result: Any = None
         match node:
             case AgentNode():
-                return await self._execute_agent(node, ctx, parent_event_id=parent_event_id)
+                result = await self._execute_agent(node, ctx, parent_event_id=parent_event_id)
             case ToolNode():
-                t0 = time.monotonic()
-                result = await self._execute_tool(node, ctx)
-                duration_ms = int((time.monotonic() - t0) * 1000)
-                self._emit(
-                    ctx, "tool_result", node.node_id, node.name or "",
-                    payload={
-                        "tool_name": node.name,
-                        "callable_ref": node.callable_ref,
-                        "output_summary": _summarise(result),
-                        "success": True,
-                        "duration_ms": duration_ms,
-                    },
-                    parent_event_id=parent_event_id,
-                )
-                return result
+                result = await self._execute_timed_tool(node, ctx, parent_event_id=parent_event_id)
             case ApprovalNode():
-                return await self._execute_approval(node, ctx, parent_event_id=parent_event_id)
+                result = await self._execute_approval(node, ctx, parent_event_id=parent_event_id)
             case ContextNode():
-                return node.content
+                result = node.content
             case GraphNode():
-                return await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
+                result = await self._execute_subgraph(node, ctx, parent_event_id=parent_event_id)
             case TransformNode():
-                return await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
+                result = await self._execute_transform(node, ctx, parent_event_id=parent_event_id)
             case ReasonerNode():
-                return await self._execute_reasoner(node, ctx, parent_event_id=parent_event_id)
+                result = await self._execute_reasoner(node, ctx, parent_event_id=parent_event_id)
             case PromptNode():
-                return node.render()
-            case _:
-                return None
+                result = node.render()
+        return result
+
+    async def _execute_timed_tool(
+        self,
+        node:            ToolNode,
+        ctx:             ExecutionContext,
+        parent_event_id: str | None = None,
+    ) -> Any:
+        """Execute a ToolNode and emit its `tool_result` event with timing."""
+        t0 = time.monotonic()
+        result = await self._execute_tool(node, ctx)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._emit(
+            ctx, "tool_result", node.node_id, node.name or "",
+            payload={
+                "tool_name": node.name,
+                "callable_ref": node.callable_ref,
+                "output_summary": _summarise(result),
+                "success": True,
+                "duration_ms": duration_ms,
+            },
+            parent_event_id=parent_event_id,
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Sub-graph execution
@@ -2146,36 +2259,9 @@ class GraphExecutor:
         )
 
         async def _run_subgraph() -> Any:
-            if node.scope_outputs:
-                child = ExecutionContext(
-                    query=sub_query,
-                    session_id=ctx.session_id,
-                    max_hops=max(ctx.max_hops - ctx.hop_count, 1),
-                    state=ctx.state,
-                    allowed_tools=ctx.allowed_tools,
-                    extra_messages=list(ctx.extra_messages),
-                    _active_subgraphs=ctx._active_subgraphs + [node.node_id],
-                )
-                if sub_state_overlay:
-                    ctx.state.data.update(sub_state_overlay)
-                await self._dispatch_strategy(node.strategy, sub_entry, child)
-                ctx.trace.extend(child.trace)
-                ctx.hop_count += child.hop_count
-                return child.outputs.get(exit_id)
-            else:
-                ctx._active_subgraphs.append(node.node_id)
-                try:
-                    if sub_state_overlay:
-                        ctx.state.data.update(sub_state_overlay)
-                    prev_query = ctx.query
-                    ctx.query = sub_query
-                    try:
-                        await self._dispatch_strategy(node.strategy, sub_entry, ctx)
-                    finally:
-                        ctx.query = prev_query
-                    return ctx.outputs.get(exit_id)
-                finally:
-                    ctx._active_subgraphs.pop()
+            return await self._run_scoped_subgraph(
+                node, ctx, sub_entry, exit_id, sub_query, sub_state_overlay
+            )
 
         try:
             result = await self._call_with_retry(
@@ -2295,6 +2381,57 @@ class GraphExecutor:
         ctx:             ExecutionContext,
         parent_event_id: str | None = None,
     ) -> dict[str, Any]:
+        early = await self._agent_prescreen(node, ctx, parent_event_id)
+        if early is not None:
+            return early
+        t0 = time.monotonic()
+        _composed, system, tool_defs, agent_event_id, messages = await self._prepare_agent_turn(
+            node, ctx, parent_event_id
+        )
+        loop = _AgentTurnLoop(messages=messages, max_tokens=node.max_tokens)
+
+        for _iteration in range(node.max_iterations):
+            loop.iterations += 1
+            policy = node.execution_policy
+            # Bind this turn's messages and token budget; the loop reassigns both.
+            last_response = await self._call_with_retry(
+                functools.partial(
+                    self._chat_once, node, system, loop.messages, tool_defs, max_tokens=loop.max_tokens
+                ),
+                ctx,
+                node=node,
+                policy=policy,
+                parent_event_id=agent_event_id,
+            )
+            recovered = await self._recover_agent_turn(
+                node, ctx, last_response, loop, agent_event_id=agent_event_id
+            )
+            if recovered:
+                continue
+
+            # Terminal turn: a natural end of turn, or a truncation we can no longer
+            # grow out of. Fall back to the reasoning trace when the model produced
+            # only chain-of-thought and no visible answer, so downstream never sees "".
+            return await self._finalize_agent_turn(
+                node, ctx, last_response,
+                agent_event_id=agent_event_id, iterations=loop.iterations, t0=t0,
+            )
+
+        return await self._finish_exhausted_agent(
+            node, ctx, last_response,
+            agent_event_id=agent_event_id, iterations=loop.iterations, t0=t0,
+        )
+
+    async def _agent_prescreen(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        parent_event_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Handle pause_before and already-satisfied completion_paths.
+
+        Returns an early-result dict when the agent loop must not run at all.
+        """
         if node.pause_before:
             await self._pause_execution(
                 ctx,
@@ -2304,13 +2441,13 @@ class GraphExecutor:
             )
             return {"text": "", "intent": "default", "status": "paused"}
         # Pre-satisfied completion_paths → the node's work already exists; skip the
-        # agent entirely. The symmetric complement of the not-done check below (a
-        # terminal turn with a declared path MISSING is re-prompted): on resume, a
-        # fan-out re-executes every agent node, and each "already done" discovery
-        # costs a full LLM turn — ~8 minutes per no-op on an always-thinking local
-        # model, or a whole re-invocation on a per-call-priced executor. Same
-        # contract as the not-done side: existence only, contents never
-        # interpreted. Env kill-switch restores the previous behaviour.
+        # agent entirely. The symmetric complement of the not-done check in
+        # _handle_completion_turn (a terminal turn with a declared path MISSING is
+        # re-prompted): on resume, a fan-out re-executes every agent node, and each
+        # "already done" discovery costs a full LLM turn — ~8 minutes per no-op on an
+        # always-thinking local model, or a whole re-invocation on a per-call-priced
+        # executor. Same contract as the not-done side: existence only, contents
+        # never interpreted. Env kill-switch restores the previous behaviour.
         _declared = (getattr(node, "attributes", None) or {}).get("completion_paths") or []
         if (_declared and not missing_completion_paths(node)
                 and os.environ.get("YGG_SKIP_COMPLETED_AGENTS", "1") != "0"):
@@ -2322,7 +2459,18 @@ class GraphExecutor:
             )
             return {"text": "already complete: every declared completion path exists",
                     "intent": "complete", "skipped": True}
-        t0 = time.monotonic()
+        return None
+
+    async def _prepare_agent_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        parent_event_id: str | None,
+    ) -> tuple[ComposedAgent, str, list[dict[str, Any]], str, list[dict[str, Any]]]:
+        """Compose the agent, validate inputs, emit start events, build messages.
+
+        Returns (composed, system, tool_defs, agent_event_id, messages).
+        """
         composed  = await self.composer.compose(node, query=_query_text(ctx.query), session_id=ctx.session_id)
         system    = composed.build_system_prompt()
         tool_defs = composed.build_tool_schemas()
@@ -2335,6 +2483,21 @@ class GraphExecutor:
         )
 
         agent_event_id = str(uuid.uuid4())
+        self._emit_agent_start(node, ctx, composed, system, agent_event_id, parent_event_id)
+        if composed.context:
+            self._emit_context_inject(node, ctx, composed, agent_event_id, parent_event_id)
+        return composed, system, tool_defs, agent_event_id, self._agent_messages(composed, ctx)
+
+    def _emit_agent_start(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        composed:        ComposedAgent,
+        system:          str,
+        agent_event_id:  str,
+        parent_event_id: str | None,
+    ) -> None:
+        """Emit `agent_start` so downstream metrics extraction picks up agent counts."""
         self._emit(
             ctx, "agent_start", node.node_id, node.name or "",
             payload={
@@ -2357,29 +2520,39 @@ class GraphExecutor:
             parent_event_id=parent_event_id,
         )
 
-        if composed.context:
-            self._emit(
-                ctx, "context_inject", node.node_id, node.name or "",
-                payload={
-                    "context_names": [c.name for c in composed.context if c.name],
-                    "count":         len(composed.context),
-                    "selected_contexts": [
-                        {
-                            "node_id": s.context.node_id,
-                            "name": s.context.name,
-                            "score": round(s.score, 4),
-                            "source": s.source,
-                            "hops": s.hops,
-                            "token_count": s.token_count,
-                            "path": s.path,
-                            "reasons": s.reasons,
-                        }
-                        for s in composed.context_selection
-                    ],
-                },
-                parent_event_id=agent_event_id,
-            )
+    def _emit_context_inject(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        composed:        ComposedAgent,
+        agent_event_id:  str,
+        parent_event_id: str | None,
+    ) -> None:
+        """Emit `context_inject` with the injected contexts and their scoring detail."""
+        self._emit(
+            ctx, "context_inject", node.node_id, node.name or "",
+            payload={
+                "context_names": [c.name for c in composed.context if c.name],
+                "count":         len(composed.context),
+                "selected_contexts": [
+                    {
+                        "node_id": s.context.node_id,
+                        "name": s.context.name,
+                        "score": round(s.score, 4),
+                        "source": s.source,
+                        "hops": s.hops,
+                        "token_count": s.token_count,
+                        "path": s.path,
+                        "reasons": s.reasons,
+                    }
+                    for s in composed.context_selection
+                ],
+            },
+            parent_event_id=agent_event_id,
+        )
 
+    def _agent_messages(self, composed: ComposedAgent, ctx: ExecutionContext) -> list[dict[str, Any]]:
+        """First-turn message list: prior history, workflow state, then the user query."""
         messages: list[dict[str, Any]] = list(ctx.extra_messages)
         if ctx.state.data:
             messages.append({
@@ -2396,176 +2569,269 @@ class GraphExecutor:
         else:
             user_content = ctx.query
         messages.append({"role": "user", "content": user_content})
+        return messages
 
-        last_response = None
-        iterations = 0
-        cur_max_tokens = node.max_tokens
-        token_escalations = 0
-        tool_call_corrections = 0
-        continuation_nudges = 0
-        completion_nudges = 0
+    async def _recover_agent_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Handle the recoverable turn shapes (tools, corrections, nudges).
 
-        for _iteration in range(node.max_iterations):
-            iterations += 1
-            policy = node.execution_policy
-            # Bind this turn's messages and token budget; the loop reassigns both.
-            last_response = await self._call_with_retry(
-                functools.partial(
-                    self._chat_once, node, system, messages, tool_defs, max_tokens=cur_max_tokens
-                ),
-                ctx,
-                node=node,
-                policy=policy,
-                parent_event_id=agent_event_id,
-            )
+        Returns True when the turn was handled and the iteration loop should
+        continue; False means the response is terminal.
+        """
+        if await self._handle_tool_calls_turn(node, ctx, response, loop, agent_event_id=agent_event_id):
+            return True
+        if self._handle_unparsed_call_turn(node, ctx, response, loop, agent_event_id=agent_event_id):
+            return True
+        if self._handle_truncation_turn(node, ctx, response, loop, agent_event_id=agent_event_id):
+            return True
+        if self._handle_narration_turn(node, ctx, response, loop, agent_event_id=agent_event_id):
+            return True
+        return self._handle_completion_turn(node, ctx, response, loop, agent_event_id=agent_event_id)
 
-            # A turn that emitted tool calls is actionable regardless of whether it
-            # also hit the token limit: run the tools and continue the conversation.
-            if last_response.tool_calls:
-                tool_results = await self._handle_tool_calls(
-                    last_response, node, ctx, parent_event_id=agent_event_id
-                )
-                messages = self._require_backend().extend_messages(messages, last_response, tool_results)
-                # Bound the re-read: once the history is long, shrink old turns in place
-                # every _HISTORY_COMPACT_EVERY iterations (batched so caching stays warm).
-                if _HISTORY_COMPACT_EVERY and iterations % _HISTORY_COMPACT_EVERY == 0:
-                    _compact_history(messages)
-                continue
+    async def _handle_tool_calls_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Run a tool-call turn: execute tools, extend the conversation, compact history.
 
-            # The model wrote a tool call as TEXT and the API layer never parsed it, so
-            # no tool ran — the turn only LOOKS final. Tell it the call wasn't executed
-            # and let it re-issue a well-formed one, instead of accepting raw markup as
-            # the agent's result (which ended steps mid-task on local models).
-            if (
-                last_response.stop_reason == "unparsed_tool_call"
-                and tool_call_corrections < _MAX_TOOL_CALL_CORRECTIONS
-            ):
-                tool_call_corrections += 1
-                messages = self._require_backend().extend_messages(messages, last_response, [])
-                messages.append({"role": "user", "content": _TOOL_CALL_CORRECTION_PROMPT})
-                self._emit(
-                    ctx, "retry", node.node_id, node.name or "",
-                    payload={
-                        "reason":     "unparsed_tool_call",
-                        "correction": tool_call_corrections,
-                        "text":       (last_response.text or "")[:400],
-                    },
-                    parent_event_id=agent_event_id,
-                )
-                continue
+        A turn that emitted tool calls is actionable regardless of whether it also
+        hit the token limit.
+        """
+        if not response.tool_calls:
+            return False
+        tool_results = await self._handle_tool_calls(
+            response, node, ctx, parent_event_id=agent_event_id
+        )
+        loop.messages = self._require_backend().extend_messages(loop.messages, response, tool_results)
+        # Bound the re-read: once the history is long, shrink old turns in place
+        # every _HISTORY_COMPACT_EVERY iterations (batched so caching stays warm).
+        if _HISTORY_COMPACT_EVERY and loop.iterations % _HISTORY_COMPACT_EVERY == 0:
+            _compact_history(loop.messages)
+        return True
 
-            # Truncated at max_tokens with NOTHING actionable — the model's reasoning
-            # consumed the whole budget before it could answer or call a tool. Give it
-            # more room and retry the SAME turn (bounded) instead of mistaking the empty
-            # result for completion (the root cause of an agent silently doing nothing).
-            _max_esc, _factor, _cap = _escalation_knobs()
-            if (
-                last_response.stop_reason == "max_tokens"
-                and token_escalations < _max_esc
-                and _factor > 1
-                and cur_max_tokens < _cap
-            ):
-                token_escalations += 1
-                cur_max_tokens = min(cur_max_tokens * _factor, _cap)
-                self._emit(
-                    ctx, "retry", node.node_id, node.name or "",
-                    payload={
-                        "reason":       "max_tokens_truncation",
-                        "escalation":   token_escalations,
-                        "max_tokens":   cur_max_tokens,
-                    },
-                    parent_event_id=agent_event_id,
-                )
-                continue
+    def _handle_unparsed_call_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Re-prompt after a tool call written as TEXT that the API layer never parsed.
 
-            # A blank or announce-and-stop turn is not an answer — the model was
-            # about to act. Nudge it to continue (bounded) instead of accepting a
-            # non-answer as the agent's result and ending the step mid-task.
-            if (
-                continuation_nudges < _MAX_CONTINUATION_NUDGES
-                and looks_like_narration_only(last_response.text, last_response.reasoning)
-            ):
-                continuation_nudges += 1
-                messages = self._require_backend().extend_messages(messages, last_response, [])
-                messages.append({"role": "user", "content": _CONTINUATION_NUDGE})
-                self._emit(
-                    ctx, "retry", node.node_id, node.name or "",
-                    payload={
-                        "reason": "narration_only_turn",
-                        "nudge":  continuation_nudges,
-                        "text":   (last_response.text or "")[:200],
-                    },
-                    parent_event_id=agent_event_id,
-                )
-                continue
+        No tool ran — the turn only LOOKS final. Tell the model the call wasn't
+        executed and let it re-issue a well-formed one, instead of accepting raw
+        markup as the agent's result (which ended steps mid-task on local models).
+        """
+        if not (
+            response.stop_reason == "unparsed_tool_call"
+            and loop.tool_call_corrections < _MAX_TOOL_CALL_CORRECTIONS
+        ):
+            return False
+        loop.tool_call_corrections += 1
+        loop.messages = self._require_backend().extend_messages(loop.messages, response, [])
+        loop.messages.append({"role": "user", "content": _TOOL_CALL_CORRECTION_PROMPT})
+        self._emit(
+            ctx, "retry", node.node_id, node.name or "",
+            payload={
+                "reason":     "unparsed_tool_call",
+                "correction": loop.tool_call_corrections,
+                "text":       (response.text or "")[:400],
+            },
+            parent_event_id=agent_event_id,
+        )
+        return True
 
-            # The node declares artefacts that define "done" and some are missing, so
-            # the work is not finished no matter how the closing message reads. Say
-            # which ones and let it finish (bounded) rather than accepting the claim.
-            if completion_nudges < _MAX_COMPLETION_NUDGES:
-                _absent = missing_completion_paths(node)
-                if _absent:
-                    completion_nudges += 1
-                    messages = self._require_backend().extend_messages(messages, last_response, [])
-                    messages.append({"role": "user", "content": (
-                        "You have not finished: the file(s) this task must produce do not "
-                        "exist yet — " + ", ".join(_absent) + ". Write them now, then stop. "
-                        "Do not describe what you would write; write it.")})
-                    self._emit(
-                        ctx, "retry", node.node_id, node.name or "",
-                        payload={"reason": "missing_completion_paths",
-                                 "nudge": completion_nudges, "missing": _absent[:10]},
-                        parent_event_id=agent_event_id,
-                    )
-                    continue
+    def _handle_truncation_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Escalate the token budget after a truncation with nothing actionable.
 
-            # Terminal turn: a natural end of turn, or a truncation we can no longer
-            # grow out of. Fall back to the reasoning trace when the model produced
-            # only chain-of-thought and no visible answer, so downstream never sees "".
-            final_text = last_response.text or last_response.reasoning
-            intent = await self._infer_intent(final_text, node)
-            result = {"text": final_text, "intent": intent}
-            await self._validate_node_schemas(
-                node,
-                output_payload=result,
-                ctx=ctx,
-                parent_event_id=agent_event_id,
-            )
-            if node.pause_after:
-                await self._pause_execution(
-                    ctx,
-                    node,
-                    reason="pause_after",
-                    waiting_for=node.wait_for_input,
-                    metadata={"result": result},
-                )
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            self._emit(
-                ctx, "agent_end", node.node_id, node.name or "",
-                payload={
-                    "text_summary":  _summarise(final_text),
-                    "full_response": final_text,
-                    "intent":        intent,
-                    "iterations":    iterations,
-                },
-                parent_event_id=agent_event_id,
-                duration_ms=duration_ms,
-            )
-            return result
+        The model's reasoning consumed the whole budget before it could answer or
+        call a tool. Give it more room and retry the SAME turn (bounded) instead of
+        mistaking the empty result for completion (the root cause of an agent
+        silently doing nothing).
+        """
+        _max_esc, _factor, _cap = _escalation_knobs()
+        if not (
+            response.stop_reason == "max_tokens"
+            and loop.token_escalations < _max_esc
+            and _factor > 1
+            and loop.max_tokens < _cap
+        ):
+            return False
+        loop.token_escalations += 1
+        loop.max_tokens = min(loop.max_tokens * _factor, _cap)
+        self._emit(
+            ctx, "retry", node.node_id, node.name or "",
+            payload={
+                "reason":       "max_tokens_truncation",
+                "escalation":   loop.token_escalations,
+                "max_tokens":   loop.max_tokens,
+            },
+            parent_event_id=agent_event_id,
+        )
+        return True
 
-        text = (last_response.text or last_response.reasoning) if last_response else ""
+    def _handle_narration_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Nudge after a blank or announce-and-stop turn (bounded).
+
+        A blank or announce-and-stop turn is not an answer — the model was about to
+        act. Nudge it to continue instead of accepting a non-answer as the agent's
+        result and ending the step mid-task.
+        """
+        if not (
+            loop.continuation_nudges < _MAX_CONTINUATION_NUDGES
+            and looks_like_narration_only(response.text, response.reasoning)
+        ):
+            return False
+        loop.continuation_nudges += 1
+        loop.messages = self._require_backend().extend_messages(loop.messages, response, [])
+        loop.messages.append({"role": "user", "content": _CONTINUATION_NUDGE})
+        self._emit(
+            ctx, "retry", node.node_id, node.name or "",
+            payload={
+                "reason": "narration_only_turn",
+                "nudge":  loop.continuation_nudges,
+                "text":   (response.text or "")[:200],
+            },
+            parent_event_id=agent_event_id,
+        )
+        return True
+
+    def _handle_completion_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        response:        Any,
+        loop:            _AgentTurnLoop,
+        *,
+        agent_event_id:  str,
+    ) -> bool:
+        """Re-prompt when declared completion artefacts are still missing (bounded).
+
+        The node declares artefacts that define "done" and some are missing, so the
+        work is not finished no matter how the closing message reads. Say which ones
+        and let it finish rather than accepting the claim.
+        """
+        if loop.completion_nudges >= _MAX_COMPLETION_NUDGES:
+            return False
+        _absent = missing_completion_paths(node)
+        if not _absent:
+            return False
+        loop.completion_nudges += 1
+        loop.messages = self._require_backend().extend_messages(loop.messages, response, [])
+        loop.messages.append({"role": "user", "content": (
+            "You have not finished: the file(s) this task must produce do not "
+            "exist yet — " + ", ".join(_absent) + ". Write them now, then stop. "
+            "Do not describe what you would write; write it.")})
+        self._emit(
+            ctx, "retry", node.node_id, node.name or "",
+            payload={"reason": "missing_completion_paths",
+                     "nudge": loop.completion_nudges, "missing": _absent[:10]},
+            parent_event_id=agent_event_id,
+        )
+        return True
+
+    def _emit_agent_end(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        text:            str,
+        intent:          str,
+        iterations:      int,
+        agent_event_id:  str,
+        t0:              float,
+    ) -> None:
+        """Emit the closing `agent_end` event for an agent invocation."""
         duration_ms = int((time.monotonic() - t0) * 1000)
         self._emit(
             ctx, "agent_end", node.node_id, node.name or "",
             payload={
                 "text_summary":  _summarise(text),
                 "full_response": text,
-                "intent":        "default",
+                "intent":        intent,
                 "iterations":    iterations,
             },
             parent_event_id=agent_event_id,
             duration_ms=duration_ms,
         )
+
+    async def _finalize_agent_turn(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        last_response:   Any,
+        *,
+        agent_event_id:  str,
+        iterations:      int,
+        t0:              float,
+    ) -> dict[str, Any]:
+        """Validate + emit `agent_end` for the terminal turn; returns the result.
+
+        A natural end of turn, or a truncation we can no longer grow out of. Falls
+        back to the reasoning trace when the model produced only chain-of-thought
+        and no visible answer, so downstream never sees "".
+        """
+        final_text = last_response.text or last_response.reasoning
+        intent = await self._infer_intent(final_text, node)
+        result = {"text": final_text, "intent": intent}
+        await self._validate_node_schemas(
+            node,
+            output_payload=result,
+            ctx=ctx,
+            parent_event_id=agent_event_id,
+        )
+        if node.pause_after:
+            await self._pause_execution(
+                ctx,
+                node,
+                reason="pause_after",
+                waiting_for=node.wait_for_input,
+                metadata={"result": result},
+            )
+        self._emit_agent_end(node, ctx, final_text, intent, iterations, agent_event_id, t0)
+        return result
+
+    async def _finish_exhausted_agent(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        last_response:   Any,
+        *,
+        agent_event_id:  str,
+        iterations:      int,
+        t0:              float,
+    ) -> dict[str, Any]:
+        """Iteration budget exhausted: last text (or reasoning) with default intent."""
+        text = (last_response.text or last_response.reasoning) if last_response else ""
         result = {"text": text, "intent": "default"}
         await self._validate_node_schemas(
             node,
@@ -2573,7 +2839,49 @@ class GraphExecutor:
             ctx=ctx,
             parent_event_id=agent_event_id,
         )
+        self._emit_agent_end(node, ctx, text, "default", iterations, agent_event_id, t0)
         return result
+
+    async def _run_scoped_subgraph(
+        self,
+        node:              GraphNode,
+        ctx:               ExecutionContext,
+        sub_entry:         AnyNode,
+        exit_id:           str,
+        sub_query:         QueryContent,
+        sub_state_overlay: dict[str, Any] | None,
+    ) -> Any:
+        """Execute the sub-graph run: scoped child context or in-place with bookkeeping."""
+        if node.scope_outputs:
+            child = ExecutionContext(
+                query=sub_query,
+                session_id=ctx.session_id,
+                max_hops=max(ctx.max_hops - ctx.hop_count, 1),
+                state=ctx.state,
+                allowed_tools=ctx.allowed_tools,
+                extra_messages=list(ctx.extra_messages),
+                _active_subgraphs=ctx._active_subgraphs + [node.node_id],
+            )
+            if sub_state_overlay:
+                ctx.state.data.update(sub_state_overlay)
+            await self._dispatch_strategy(node.strategy, sub_entry, child)
+            ctx.trace.extend(child.trace)
+            ctx.hop_count += child.hop_count
+            return child.outputs.get(exit_id)
+
+        ctx._active_subgraphs.append(node.node_id)
+        try:
+            if sub_state_overlay:
+                ctx.state.data.update(sub_state_overlay)
+            prev_query = ctx.query
+            ctx.query = sub_query
+            try:
+                await self._dispatch_strategy(node.strategy, sub_entry, ctx)
+            finally:
+                ctx.query = prev_query
+            return ctx.outputs.get(exit_id)
+        finally:
+            ctx._active_subgraphs.pop()
 
     async def _execute_approval(
         self,
@@ -2949,6 +3257,70 @@ class GraphExecutor:
         )
         return result
 
+    def _facts_from_state(self, src: Any, ctx: ExecutionContext) -> list[Any]:
+        """Ground facts from workflow state: declared state_keys or last outputs."""
+        if src.state_keys:
+            values = (ctx.state.data.get(key) for key in src.state_keys)
+            return [
+                item
+                for value in values
+                if value is not None
+                for item in (value if isinstance(value, list) else [value])
+            ]
+        last = list(ctx.outputs.values())[-1] if ctx.outputs else None
+        state_facts = ctx.state.data.get("facts")
+        if isinstance(last, list):
+            output_facts: list[Any] = last
+        elif isinstance(last, dict) and isinstance(last.get("facts"), list):
+            output_facts = last["facts"]
+        else:
+            output_facts = []
+        return [
+            *output_facts,
+            *(state_facts if isinstance(state_facts, list) else []),
+        ]
+
+    def _facts_from_nodes(self, src: Any, nodes: list[Any]) -> list[Any]:
+        """Ground `(node_type, label)` facts for every node in the store."""
+        return [
+            (str(n.node_type), n.name if (src.use_node_names and n.name) else n.node_id)
+            for n in nodes
+        ]
+
+    async def _facts_from_edges(self, src: Any) -> list[Any]:
+        """Ground `(predicate, src_label, dst_label)` facts for the declared edge types."""
+        if not src.edge_types:
+            return []
+        name_cache: dict[str, str] = {}
+
+        async def _label(node_id: str) -> str:
+            if node_id in name_cache:
+                return name_cache[node_id]
+            if not src.use_node_names:
+                name_cache[node_id] = node_id
+                return node_id
+            n = await self.store.get_node(node_id)
+            label = (n.name if n and n.name else node_id)
+            name_cache[node_id] = label
+            return label
+
+        facts: list[Any] = []
+        for etype in src.edge_types:
+            try:
+                edge_type = EdgeType(etype)
+            except ValueError:
+                edge_type = None
+            edges = (
+                await self.store.list_edges(edge_type=edge_type) if edge_type
+                else [e for e in await self.store.list_edges() if str(e.edge_type) == etype]
+            )
+            pred = etype.lower()
+            facts.extend([
+                (pred, await _label(e.src_id), await _label(e.dst_id))
+                for e in edges
+            ])
+        return facts
+
     async def _gather_reasoner_facts(
         self,
         node: ReasonerNode,
@@ -2956,56 +3328,12 @@ class GraphExecutor:
     ) -> list[Any]:
         """Collect ground facts for a reasoner from state and the knowledge graph."""
         src = node.fact_source
-        facts: list[Any] = []
-
-        if src.state_keys:
-            for key in src.state_keys:
-                val = ctx.state.data.get(key)
-                if isinstance(val, list):
-                    facts.extend(val)
-                elif val is not None:
-                    facts.append(val)
-        else:
-            if ctx.outputs:
-                last = list(ctx.outputs.values())[-1]
-                if isinstance(last, list):
-                    facts.extend(last)
-                elif isinstance(last, dict) and isinstance(last.get("facts"), list):
-                    facts.extend(last["facts"])
-            if isinstance(ctx.state.data.get("facts"), list):
-                facts.extend(ctx.state.data["facts"])
-
-        if src.edge_types:
-            name_cache: dict[str, str] = {}
-
-            async def _label(node_id: str) -> str:
-                if node_id in name_cache:
-                    return name_cache[node_id]
-                if not src.use_node_names:
-                    name_cache[node_id] = node_id
-                    return node_id
-                n = await self.store.get_node(node_id)
-                label = (n.name if n and n.name else node_id)
-                name_cache[node_id] = label
-                return label
-
-            for etype in src.edge_types:
-                try:
-                    edge_type = EdgeType(etype)
-                except ValueError:
-                    edge_type = None
-                edges = await self.store.list_edges(edge_type=edge_type) if edge_type else []
-                if edge_type is None:
-                    edges = [e for e in await self.store.list_edges() if str(e.edge_type) == etype]
-                pred = etype.lower()
-                for e in edges:
-                    facts.append((pred, await _label(e.src_id), await _label(e.dst_id)))
-
+        facts: list[Any] = [
+            *self._facts_from_state(src, ctx),
+            *await self._facts_from_edges(src),
+        ]
         if src.include_node_facts:
-            for n in await self.store.list_nodes():
-                label = n.name if (src.use_node_names and n.name) else n.node_id
-                facts.append((str(n.node_type), label))
-
+            facts.extend(self._facts_from_nodes(src, await self.store.list_nodes()))
         return facts
 
     async def _chat_once(
@@ -3312,6 +3640,180 @@ class GraphExecutor:
 # print_trace() — render a session trace as a human-readable execution tree
 # ---------------------------------------------------------------------------
 
+def _trace_fmt_ms(ms: int | None) -> str:
+    """`[123ms]` for timed events, empty string otherwise."""
+    return f"[{ms}ms]" if ms is not None else ""
+
+
+def _render_trace_hop(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render a hop line, then its child events one level deeper."""
+    p = event.payload
+    pad = "  " * indent
+    node_type = p.get("node_type", "").split(".")[-1].upper()
+    hop_num   = p.get("hop", "")
+    hop_label = f"hop {hop_num}  " if hop_num else ""
+    print(f"{pad}{hop_label}{node_type}  {event.node_name}")
+    for child in children.get(event.event_id, []):
+        _render_trace_event(child, children, indent + 1)
+
+
+def _render_trace_agent_start(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render agent tools/context and the ranked context list; children share the level."""
+    p = event.payload
+    pad = "  " * indent
+    tools = ", ".join(p.get("tools", [])) or "none"
+    ctx_l = p.get("context", [])
+    ctx_s = f"  context: {', '.join(ctx_l)}" if ctx_l else ""
+    print(f"{pad}tools: {tools}{ctx_s}")
+    if p.get("context_scores"):
+        ranked = [
+            f"{item.get('name')}[{item.get('score')}, {item.get('source')}, hops={item.get('hops')}]"
+            for item in p["context_scores"]
+        ]
+        print(f"{pad}ranked_context: {' | '.join(ranked)}")
+    for child in children.get(event.event_id, []):
+        _render_trace_event(child, children, indent)
+
+
+def _render_trace_context_inject(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render injected context names and, per selected context, its scoring detail."""
+    p = event.payload
+    pad = "  " * indent
+    names = ", ".join(p.get("context_names", [])) or "—"
+    count = p.get("count", 0)
+    print(f"{pad}context_inject  {names}  ({count} nodes)")
+    for item in p.get("selected_contexts", []):
+        reasons = ", ".join(item.get("reasons", []))
+        print(
+            f"{pad}  selected  {item.get('name')}  score={item.get('score')}  "
+            f"source={item.get('source')}  hops={item.get('hops')}  "
+            f"tokens={item.get('token_count')}"
+        )
+        if reasons:
+            print(f"{pad}    reasons  {reasons}")
+
+def _render_trace_agent_end(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the agent's final summary, intent, iterations and timing."""
+    p = event.payload
+    pad = "  " * indent
+    ms = _trace_fmt_ms(event.duration_ms)
+    summary = p.get("text_summary", "")
+    intent  = p.get("intent", "default")
+    iters   = p.get("iterations", 1)
+    iter_s  = f"  iters={iters}" if iters > 1 else ""
+    print(f"{pad}agent_end  {summary!r}  intent={intent}{iter_s}  {ms}")
+
+
+def _render_trace_tool_call(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the tool call with a truncated input preview, then its result child."""
+    p = event.payload
+    pad = "  " * indent
+    inp = json.dumps(p.get("input", {}), ensure_ascii=False)
+    inp = inp[:_TOOL_INPUT_PREVIEW_CHARS] + "…" if len(inp) > _TOOL_INPUT_PREVIEW_CHARS else inp
+    print(f"{pad}tool_call  {event.node_name}  {inp}")
+    for child in children.get(event.event_id, []):
+        _render_trace_event(child, children, indent + 1)
+
+
+def _render_trace_tool_result(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the tool result status, summary and timing."""
+    p = event.payload
+    pad = "  " * indent
+    ms = _trace_fmt_ms(event.duration_ms)
+    status  = "ok" if p.get("success") else "err"
+    summary = p.get("output_summary", "")
+    print(f"{pad}tool_result  {event.node_name}  {status}  {summary!r}  {ms}")
+
+
+def _render_trace_routing(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the routing decision: intent → next node, with optional confidence."""
+    p = event.payload
+    pad = "  " * indent
+    intent  = p.get("intent", "default")
+    next_id = p.get("next_node_id") or "__END__"
+    conf    = p.get("confidence")
+    conf_s  = f"  conf={conf:.0%}" if conf is not None else ""
+    print(f"{pad}routing  {intent} → {next_id}{conf_s}")
+
+
+def _render_trace_subgraph_enter(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the sub-graph entry line, then the sub-graph's events one level deeper."""
+    p = event.payload
+    pad = "  " * indent
+    print(f"{pad}subgraph_enter  {event.node_name}  entry={p.get('entry_node_id','')}")
+    for child in children.get(event.event_id, []):
+        _render_trace_event(child, children, indent + 1)
+
+
+def _render_trace_subgraph_exit(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render the sub-graph exit line with timing."""
+    pad = "  " * indent
+    ms = _trace_fmt_ms(event.duration_ms)
+    print(f"{pad}subgraph_exit   {event.node_name}  {ms}")
+
+
+_TRACE_EVENT_RENDERERS: dict[
+    str, Callable[[TraceEvent, dict[str | None, list[TraceEvent]], int], None]
+] = {
+    "hop":             _render_trace_hop,
+    "agent_start":     _render_trace_agent_start,
+    "context_inject":  _render_trace_context_inject,
+    "agent_end":       _render_trace_agent_end,
+    "tool_call":       _render_trace_tool_call,
+    "tool_result":     _render_trace_tool_result,
+    "routing":         _render_trace_routing,
+    "subgraph_enter":  _render_trace_subgraph_enter,
+    "subgraph_exit":   _render_trace_subgraph_exit,
+}
+
+
+def _render_trace_event(
+    event: TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    indent: int,
+) -> None:
+    """Render one trace event via its per-type renderer; unknown types are skipped."""
+    renderer = _TRACE_EVENT_RENDERERS.get(event.event_type)
+    if renderer is not None:
+        renderer(event, children, indent)
+
+
 def print_trace(ctx: ExecutionContext | list[TraceEvent], *, width: int = 72) -> None:
     """Print the execution trace as a human-readable tree."""
     match ctx:
@@ -3332,103 +3834,17 @@ def print_trace(ctx: ExecutionContext | list[TraceEvent], *, width: int = 72) ->
     for e in events:
         children.setdefault(e.parent_event_id, []).append(e)
 
-    def _fmt_ms(ms: int | None) -> str:
-        return f"[{ms}ms]" if ms is not None else ""
+    root_events = children.get(None, [])
+    for event in root_events:
+        _render_trace_event(event, children, indent=0)
+    hops = sum(1 for e in root_events if e.event_type == "hop")
 
-    def _render(event: TraceEvent, indent: int) -> None:
-        pad = "  " * indent
-        t   = event.event_type
-        p   = event.payload
-        ms  = _fmt_ms(event.duration_ms)
-
-        match t:
-            case "hop":
-                node_type = p.get("node_type", "").split(".")[-1].upper()
-                hop_num   = p.get("hop", "")
-                hop_label = f"hop {hop_num}  " if hop_num else ""
-                print(f"{pad}{hop_label}{node_type}  {event.node_name}")
-                for child in children.get(event.event_id, []):
-                    _render(child, indent + 1)
-
-            case "agent_start":
-                tools = ", ".join(p.get("tools", [])) or "none"
-                ctx_l = p.get("context", [])
-                ctx_s = f"  context: {', '.join(ctx_l)}" if ctx_l else ""
-                print(f"{pad}tools: {tools}{ctx_s}")
-                if p.get("context_scores"):
-                    ranked = [
-                        f"{item.get('name')}[{item.get('score')}, {item.get('source')}, hops={item.get('hops')}]"
-                        for item in p["context_scores"]
-                    ]
-                    print(f"{pad}ranked_context: {' | '.join(ranked)}")
-                for child in children.get(event.event_id, []):
-                    _render(child, indent)
-
-            case "context_inject":
-                names = ", ".join(p.get("context_names", [])) or "—"
-                count = p.get("count", 0)
-                print(f"{pad}context_inject  {names}  ({count} nodes)")
-                for item in p.get("selected_contexts", []):
-                    reasons = ", ".join(item.get("reasons", []))
-                    print(
-                        f"{pad}  selected  {item.get('name')}  score={item.get('score')}  "
-                        f"source={item.get('source')}  hops={item.get('hops')}  "
-                        f"tokens={item.get('token_count')}"
-                    )
-                    if reasons:
-                        print(f"{pad}    reasons  {reasons}")
-
-            case "agent_end":
-                summary = p.get("text_summary", "")
-                intent  = p.get("intent", "default")
-                iters   = p.get("iterations", 1)
-                iter_s  = f"  iters={iters}" if iters > 1 else ""
-                print(f"{pad}agent_end  {summary!r}  intent={intent}{iter_s}  {ms}")
-
-            case "tool_call":
-                inp = json.dumps(p.get("input", {}), ensure_ascii=False)
-                inp = inp[:60] + "…" if len(inp) > 60 else inp
-                print(f"{pad}tool_call  {event.node_name}  {inp}")
-                for child in children.get(event.event_id, []):
-                    _render(child, indent + 1)
-
-            case "tool_result":
-                status  = "ok" if p.get("success") else "err"
-                summary = p.get("output_summary", "")
-                print(f"{pad}tool_result  {event.node_name}  {status}  {summary!r}  {ms}")
-
-            case "routing":
-                intent  = p.get("intent", "default")
-                next_id = p.get("next_node_id") or "__END__"
-                conf    = p.get("confidence")
-                conf_s  = f"  conf={conf:.0%}" if conf is not None else ""
-                print(f"{pad}routing  {intent} → {next_id}{conf_s}")
-
-            case "subgraph_enter":
-                print(f"{pad}subgraph_enter  {event.node_name}  entry={p.get('entry_node_id','')}")
-                for child in children.get(event.event_id, []):
-                    _render(child, indent + 1)
-
-            case "subgraph_exit":
-                print(f"{pad}subgraph_exit   {event.node_name}  {ms}")
-
-    total_ms = 0
-    hops     = 0
-    ends     = 0
-    for event in children.get(None, []):
-        _render(event, indent=0)
-        if event.event_type == "hop":
-            hops += 1
-
-    for event in events:
-        if event.event_type == "agent_end":
-            ends += 1
-            if event.duration_ms:
-                total_ms += event.duration_ms
+    agent_ends = [e for e in events if e.event_type == "agent_end"]
+    total_ms = sum(e.duration_ms for e in agent_ends if e.duration_ms is not None)
 
     print(sep)
     ms_s = f" · {total_ms}ms" if total_ms else ""
-    print(f"Total: {hops} hops · {ends} agent_end events{ms_s}\n")
+    print(f"Total: {hops} hops · {len(agent_ends)} agent_end events{ms_s}\n")
 
 
 # ---------------------------------------------------------------------------

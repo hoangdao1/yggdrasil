@@ -12,6 +12,9 @@ from yggdrasil_lm.core.edges import Edge, EdgeType
 from yggdrasil_lm.core.nodes import ContextNode, Node, node_from_dict
 from yggdrasil_lm.core.store import NetworkXGraphStore
 
+DOMAIN_GRAPH_NODE_COUNT = 3   # endpoint + sdk_method + monitor
+ENDPOINT_INCOMING_EDGES = 2   # "checks" and "wraps" both point at the endpoint
+
 
 @pytest.fixture
 def store():
@@ -53,7 +56,7 @@ async def test_list_nodes_filters_by_domain_type(domain_graph):
     assert {n.name for n in await store.list_nodes(domain_type="sdk_method")} == {"client.get_user"}
     assert await store.list_nodes(domain_type="nonexistent") == []
     # absent filter still returns everything
-    assert len(await store.list_nodes()) == 3
+    assert len(await store.list_nodes()) == DOMAIN_GRAPH_NODE_COUNT
 
 
 async def test_list_edges_filters_by_relation(domain_graph):
@@ -66,7 +69,7 @@ async def test_list_edges_filters_by_relation(domain_graph):
 async def test_get_edges_filters_by_relation(domain_graph):
     store, endpoint, sdk_method, _monitor = domain_graph
     incoming = await store.get_edges(endpoint.node_id, direction="in")
-    assert len(incoming) == 2  # both relation edges point at the endpoint
+    assert len(incoming) == ENDPOINT_INCOMING_EDGES
     wraps = await store.get_edges(endpoint.node_id, direction="in", relation="wraps")
     assert len(wraps) == 1 and wraps[0].src_id == sdk_method.node_id
 

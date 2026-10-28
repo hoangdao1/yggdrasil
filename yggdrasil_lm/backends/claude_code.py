@@ -171,31 +171,36 @@ def _json_type_to_python(type_str: str) -> type:
     }.get(type_str, str)
 
 
+def _arg_type_ok(value: Any, schema_type: str | None) -> bool:
+    """True when `value` matches the declared JSON schema type (if any).
+
+    `number`/`integer` reject bools explicitly — bool is an int subclass in
+    Python, but JSON distinguishes the two.
+    """
+    if schema_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if schema_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type:
+        return isinstance(value, _json_type_to_python(schema_type))
+    return True
+
+
 def _validate_tool_args(args: dict[str, Any], schema: dict[str, Any], tool_name: str) -> None:
     if not schema:
         return
     if schema.get("type") == "object" and not isinstance(args, dict):
         raise ValueError(f"{tool_name} input must be an object")
-    for key in schema.get("required", []):
-        if key not in args:
-            raise ValueError(f"{tool_name} input missing required field {key!r}")
+    missing = next((key for key in schema.get("required", []) if key not in args), None)
+    if missing is not None:
+        raise ValueError(f"{tool_name} input missing required field {missing!r}")
     for key, subschema in schema.get("properties", {}).items():
         if key not in args:
             continue
-        value = args[key]
-        schema_type = subschema.get("type")
-        if "enum" in subschema and value not in subschema["enum"]:
+        if "enum" in subschema and args[key] not in subschema["enum"]:
             raise ValueError(f"{tool_name}.{key} must be one of {subschema['enum']!r}")
-        expected_type = _json_type_to_python(schema_type or "")
-        if schema_type == "number":
-            ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-        elif schema_type == "integer":
-            ok = isinstance(value, int) and not isinstance(value, bool)
-        elif schema_type:
-            ok = isinstance(value, expected_type)
-        else:
-            ok = True
-        if not ok:
+        schema_type = subschema.get("type")
+        if not _arg_type_ok(args[key], schema_type):
             raise ValueError(f"{tool_name}.{key} must be a {schema_type}")
 
 
@@ -408,7 +413,7 @@ class ClaudeCodeExecutor(GraphExecutor):
                            A node overrides them with ``attributes["claude_code"]``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 — executor config surface; SDK session options live in **session_options
         self,
         store:              GraphStore,
         composer:           AgentComposer | None = None,
@@ -558,14 +563,41 @@ class ClaudeCodeExecutor(GraphExecutor):
             )
         prompt = ctx.query
 
-        import time as _time
-        t0 = _time.monotonic()
+        t0 = time.monotonic()
 
         composed = await self.composer.compose(node, query=_query_text(ctx.query))
         system   = composed.build_system_prompt()
 
         # Emit agent_start so downstream metrics extraction picks up agent counts.
         agent_event_id = str(uuid.uuid4())
+        self._emit_sdk_agent_start(node, ctx, composed, agent_event_id, parent_event_id)
+        if composed.context:
+            self._emit_sdk_context_inject(node, ctx, composed, agent_event_id)
+
+        mcp_servers, tool_mcp, bridged = self._prepare_sdk_bridge(
+            node, ctx, composed, system, agent_event_id
+        )
+        options = ClaudeAgentOptions(**self._session_kwargs(node, system, mcp_servers))
+
+        run_result = await self._run_sdk_agent(
+            node, ctx, prompt, options, agent_event_id, use_sdk_client=bool(tool_mcp)
+        )
+        self._emit_builtin_tool_events(ctx, node, run_result, agent_event_id, bridged)
+
+        intent = await self._infer_intent(run_result.text, node)
+        self._emit_sdk_agent_end(node, ctx, run_result, intent, agent_event_id, t0)
+
+        return {"text": run_result.text, "intent": intent}
+
+    def _emit_sdk_agent_start(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        composed:        Any,
+        agent_event_id:  str,
+        parent_event_id: str | None,
+    ) -> None:
+        """Emit `agent_start` so downstream metrics extraction picks up agent counts."""
         self._emit(
             ctx, "agent_start", node.node_id, node.name or "",
             payload={
@@ -577,19 +609,40 @@ class ClaudeCodeExecutor(GraphExecutor):
             event_id=agent_event_id,
             parent_event_id=parent_event_id,
         )
-        if composed.context:
-            self._emit(
-                ctx, "context_inject", node.node_id, node.name or "",
-                payload={
-                    "context_names": [c.name for c in composed.context if c.name],
-                    "count":         len(composed.context),
-                },
-                parent_event_id=agent_event_id,
-            )
 
-        # Build MCP server map — start with any user-supplied servers
+    def _emit_sdk_context_inject(
+        self,
+        node:           AgentNode,
+        ctx:            ExecutionContext,
+        composed:       Any,
+        agent_event_id: str,
+    ) -> None:
+        """Emit `context_inject` with the names and count of attached contexts."""
+        self._emit(
+            ctx, "context_inject", node.node_id, node.name or "",
+            payload={
+                "context_names": [c.name for c in composed.context if c.name],
+                "count":         len(composed.context),
+            },
+            parent_event_id=agent_event_id,
+        )
+
+    def _prepare_sdk_bridge(
+        self,
+        node:           AgentNode,
+        ctx:            ExecutionContext,
+        composed:       Any,
+        system:         str,
+        agent_event_id: str,
+    ) -> tuple[dict[str, Any], Any, set[str]]:
+        """Build the session's MCP server map plus the in-process tool bridge.
+
+        Returns (mcp_servers, tool_mcp, bridged_tool_names). Graph-registered
+        ToolNodes are bridged as an in-process MCP server; the recorder closure
+        emits tool_call/tool_result events and stores successful outputs.
+        """
+        # Start with any user-supplied servers
         mcp_servers: dict[str, Any] = dict(self._extra_mcp)
-
         bridged_tool_names: set[str] = set()
 
         def record_mcp_tool_result(
@@ -624,17 +677,52 @@ class ClaudeCodeExecutor(GraphExecutor):
                 duration_ms=duration_ms,
             )
 
-        # Bridge graph-registered ToolNodes as an in-process MCP server
         tool_mcp = _build_mcp_server(composed, self._tool_fns, record_mcp_tool_result)
         if tool_mcp:
             mcp_servers["yggdrasil-tools"] = tool_mcp
+        return mcp_servers, tool_mcp, bridged_tool_names
 
-        options = ClaudeAgentOptions(**self._session_kwargs(node, system, mcp_servers))
+    def _emit_sdk_agent_end(
+        self,
+        node:           AgentNode,
+        ctx:            ExecutionContext,
+        run_result:     Any,
+        intent:         str,
+        agent_event_id: str,
+        t0:             float,
+    ) -> None:
+        """Emit the closing `agent_end` event with cost and token accounting."""
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        self._emit(
+            ctx, "agent_end", node.node_id, node.name or "",
+            payload={
+                "text_summary": run_result.text[:120],
+                "full_response": run_result.text,
+                "intent":       intent,
+                "iterations":   1,
+                "cost_usd":     run_result.cost_usd,
+                "tokens_in":    run_result.tokens_in,
+                "tokens_out":   run_result.tokens_out,
+            },
+            parent_event_id=agent_event_id,
+            duration_ms=duration_ms,
+        )
 
+    async def _run_sdk_agent(
+        self,
+        node:            AgentNode,
+        ctx:             ExecutionContext,
+        prompt:          str,
+        options:         Any,
+        agent_event_id:  str,
+        *,
+        use_sdk_client:  bool,
+    ) -> _AgentRunResult:
+        """Run one SDK session; failures are emitted as `error` events, then re-raised."""
         try:
-            run_result: _AgentRunResult = await (
+            return await (
                 self._run_with_sdk_client(prompt, options)
-                if tool_mcp
+                if use_sdk_client
                 else self._run_with_query(prompt, options)
             )
         except ClaudeCodeAgentError as exc:
@@ -665,8 +753,19 @@ class ClaudeCodeExecutor(GraphExecutor):
             )
             raise
 
-        # Built-in Claude Code tools do not return structured results through the
-        # same in-process bridge, but ToolUseBlock still gives useful call data.
+    def _emit_builtin_tool_events(
+        self,
+        ctx:                ExecutionContext,
+        node:               AgentNode,
+        run_result:         _AgentRunResult,
+        agent_event_id:     str,
+        bridged_tool_names: set[str],
+    ) -> None:
+        """Emit tool_call/tool_result events for built-in Claude Code tools.
+
+        Built-in tools do not return structured results through the same
+        in-process bridge, but ToolUseBlock still gives useful call data.
+        """
         for tool_event in run_result.tool_events:
             tool_name = str(tool_event.get("name") or "claude_code_builtin")
             if tool_name in bridged_tool_names:
@@ -692,25 +791,6 @@ class ClaudeCodeExecutor(GraphExecutor):
                 },
                 parent_event_id=call_event.event_id,
             )
-
-        intent = await self._infer_intent(run_result.text, node)
-        duration_ms = int((_time.monotonic() - t0) * 1000)
-        self._emit(
-            ctx, "agent_end", node.node_id, node.name or "",
-            payload={
-                "text_summary": run_result.text[:120],
-                "full_response": run_result.text,
-                "intent":       intent,
-                "iterations":   1,
-                "cost_usd":     run_result.cost_usd,
-                "tokens_in":    run_result.tokens_in,
-                "tokens_out":   run_result.tokens_out,
-            },
-            parent_event_id=agent_event_id,
-            duration_ms=duration_ms,
-        )
-
-        return {"text": run_result.text, "intent": intent}
 
     def _session_kwargs(
         self, node: AgentNode, system: str, mcp_servers: dict[str, Any]
@@ -752,9 +832,9 @@ class ClaudeCodeExecutor(GraphExecutor):
             kwargs["cli_path"] = self._cli_path
         session = {**self._session_options, **{k: v for k, v in node_opts.items() if v is not None}}
         known = _sdk_option_fields()
-        for key, value in session.items():
-            if known is None or key in known:
-                kwargs[key] = value
+        kwargs.update(
+            {key: value for key, value in session.items() if known is None or key in known}
+        )
         return kwargs
 
     # ------------------------------------------------------------------

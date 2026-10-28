@@ -13,6 +13,9 @@ from yggdrasil_lm.symbolic import (
 )
 from yggdrasil_lm.symbolic.datalog import ParseError, rule_from_obj
 
+EXPECTED_ANCESTOR_FACTS = 3  # alice→bob, bob→carol, alice→carol
+EXPECTED_RULE_BODY_LEN = 2   # the dict-form rule has a two-literal body
+
 
 def test_transitive_closure():
     prog = Program.parse(
@@ -27,7 +30,7 @@ def test_transitive_closure():
     assert ("ancestor", "alice", "carol") in sol.facts
     assert ("ancestor", "alice", "bob") in sol.facts
     # 2 parent + 3 ancestor facts derived.
-    assert len(sol.query("ancestor")) == 3
+    assert len(sol.query("ancestor")) == EXPECTED_ANCESTOR_FACTS
 
 
 def test_base_facts_in_program():
@@ -128,7 +131,7 @@ def test_rule_from_obj_dict():
     )
     assert len(rules) == 1
     assert rules[0].head.predicate == "ancestor"
-    assert len(rules[0].body) == 2
+    assert len(rules[0].body) == EXPECTED_RULE_BODY_LEN
 
 
 def test_zero_arity_atom():

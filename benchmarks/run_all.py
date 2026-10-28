@@ -133,18 +133,23 @@ def _average_metrics(runs: list[RunMetrics]) -> RunMetrics:
 # Main
 # ---------------------------------------------------------------------------
 
+def _resolve_tasks(task_arg: str) -> list[BenchmarkTask]:
+    """Resolve the comma-separated --task value to tasks (all tasks if empty)."""
+    if not task_arg:
+        return list(ALL_TASKS)
+    task_ids = [t.strip() for t in task_arg.split(",")]
+    tasks: list[BenchmarkTask] = []
+    for tid in task_ids:
+        if tid not in TASK_MAP:
+            print(f"Unknown task: {tid!r}. Available: {list(TASK_MAP)}", file=sys.stderr)
+            sys.exit(1)
+        tasks.append(TASK_MAP[tid])
+    return tasks
+
+
 async def main(args: argparse.Namespace) -> None:
     # Resolve tasks
-    if args.task:
-        task_ids = [t.strip() for t in args.task.split(",")]
-        tasks = []
-        for tid in task_ids:
-            if tid not in TASK_MAP:
-                print(f"Unknown task: {tid!r}. Available: {list(TASK_MAP)}", file=sys.stderr)
-                sys.exit(1)
-            tasks.append(TASK_MAP[tid])
-    else:
-        tasks = list(ALL_TASKS)
+    tasks = _resolve_tasks(args.task)
 
     # Resolve systems
     valid_systems = {"graph", "single", "multi"}

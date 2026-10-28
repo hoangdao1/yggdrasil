@@ -27,6 +27,10 @@ from yggdrasil_lm.backends.claude_code import (
     _sdk_tool_schema,
 )
 
+EXPECTED_MAX_BUDGET_USD = 0.50   # budget cap handed to ClaudeCodeExecutor
+EXPECTED_ERROR_COST_USD = 1.25   # cost reported when an agent ends in error
+EXPECTED_NODE_MAX_TURNS = 7      # node-level max_iterations override
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -195,7 +199,7 @@ def test_executor_init_custom_options(store):
     assert ex._allowed_tools == ["Bash"]
     assert ex._permission_mode == "acceptEdits"
     assert ex._cwd == "/tmp"
-    assert ex._max_budget_usd == 0.50
+    assert ex._max_budget_usd == EXPECTED_MAX_BUDGET_USD
 
 
 def test_register_tool_populates_tool_fns(store):
@@ -418,7 +422,7 @@ async def test_an_agent_that_ends_in_error_still_reports_what_it_spent(store, ag
 
     assert (err.value.subtype, err.value.cost_usd) == (subtype, 1.25)
     event = next(e for e in ctx.trace if e.event_type == "error")
-    assert event.payload["cost_usd"] == 1.25
+    assert event.payload["cost_usd"] == EXPECTED_ERROR_COST_USD
     assert (event.payload["tokens_in"], event.payload["tokens_out"]) == (400, 30)
 
 
@@ -566,7 +570,7 @@ def test_session_kwargs_node_overrides_executor(store):
         kw = ex._session_kwargs(node, "s", {})
     assert kw["effort"] == "low"
     assert kw["disallowed_tools"] == ["Agent"]
-    assert kw["max_turns"] == 7
+    assert kw["max_turns"] == EXPECTED_NODE_MAX_TURNS
     assert kw["env"] == {"B": "2", "A": "1", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "12000",
                          "ANTHROPIC_API_KEY": ""}
 

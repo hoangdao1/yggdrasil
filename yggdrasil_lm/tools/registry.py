@@ -72,10 +72,9 @@ class ToolRegistry:
         if callable_ref in self._registry:
             return self._registry[callable_ref]
 
-        parts = callable_ref.rsplit(".", 1)
-        if len(parts) != 2:
+        module_path, dot, fn_name = callable_ref.rpartition(".")
+        if not dot:
             raise ImportError(f"Invalid callable_ref: {callable_ref!r}")
-        module_path, fn_name = parts
 
         candidates = [module_path]
         # Short refs like "tools.echo" live under the package, not at top level.

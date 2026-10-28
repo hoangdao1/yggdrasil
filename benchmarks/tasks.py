@@ -13,6 +13,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+# Minimum output length (chars) for an eval to count an answer as substantive.
+MIN_OUTPUT_CHARS = 200
+# Lower minimum for the short-answer simple Q&A task.
+MIN_OUTPUT_CHARS_SIMPLE_QA = 100
+
 
 @dataclass
 class AgentRole:
@@ -77,7 +82,7 @@ RESEARCH_TASK = BenchmarkTask(
     eval_fn=lambda out: (
         any(kw in out.lower() for kw in ["asyncio", "promise", "async"])
         and any(kw in out.lower() for kw in ["cancel", "error", "exception", "reject"])
-        and len(out) > 200
+        and len(out) > MIN_OUTPUT_CHARS
     ),
     tags=["multi-agent", "research", "web-search"],
 )
@@ -123,7 +128,7 @@ CODEBASE_ANALYSIS_TASK = BenchmarkTask(
     eval_fn=lambda out: (
         any(kw in out.lower() for kw in ["bottleneck", "complex", "o(n", "performance", "optimis"])
         and any(kw in out.lower() for kw in ["suggest", "recommend", "improve", "could", "should"])
-        and len(out) > 200
+        and len(out) > MIN_OUTPUT_CHARS
     ),
     tags=["multi-agent", "code-analysis", "file-tools"],
 )
@@ -153,7 +158,7 @@ SIMPLE_QA_TASK = BenchmarkTask(
     eval_fn=lambda out: (
         "bfs" in out.lower() and "dfs" in out.lower()
         and any(kw in out.lower() for kw in ["breadth", "depth"])
-        and len(out) > 100
+        and len(out) > MIN_OUTPUT_CHARS_SIMPLE_QA
     ),
     tags=["single-agent", "no-tools", "overhead"],
 )

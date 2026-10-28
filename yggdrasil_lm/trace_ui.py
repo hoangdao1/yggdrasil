@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from typing import Any, Literal
 
 from yggdrasil_lm.core.executor import ExecutionContext, TraceEvent, _query_text, print_trace
@@ -166,11 +167,14 @@ def _render_session(
 # Event renderer (recursive)
 # ---------------------------------------------------------------------------
 
+_MS_PER_SECOND = 1000
+
+
 def _fmt_ms(ms: int | None) -> str:
     """Return a plain (no markup) timing string, or empty string."""
     if ms is None:
         return ""
-    return f"{ms}ms" if ms < 1000 else f"{ms/1000:.1f}s"
+    return f"{ms}ms" if ms < _MS_PER_SECOND else f"{ms / _MS_PER_SECOND:.1f}s"
 
 
 def _truncate(s: str, n: int) -> str:
@@ -192,6 +196,308 @@ def _json_panel(data: dict[str, Any] | str, title: str, color: str, verbose: boo
     )
 
 
+def _render_hop_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `hop` event and its children as a nested tree branch."""
+    p = event.payload
+    node_type = p.get("node_type", "").split(".")[-1].upper()
+    hop_num   = p.get("hop", "")
+    label     = Text()
+    label.append(f"HOP {hop_num}  ", style=_HOP_COLOR)
+    label.append(f"{node_type}  ", style=_DIM)
+    label.append(event.node_name, style=_AGENT_COLOR)
+    ms = _fmt_ms(event.duration_ms)
+    if ms:
+        label.append(f"  {ms}", style=_DIM)
+
+    branch = Tree(label)
+    for child in children.get(event.event_id, []):
+        _render_event(console, child, children, verbose, depth=0, tree=branch)
+
+    if tree:
+        tree.add(branch)
+    else:
+        console.print(branch)
+        console.print()
+
+
+def _render_agent_start_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render an `agent_start` event: model, tools, context, ranked contexts."""
+    p = event.payload
+    pad = "  " * depth
+    model      = p.get("model", "?")
+    tools      = p.get("tools", [])
+    ctx_l      = p.get("context", [])
+    ctx_scores = p.get("context_scores", [])
+
+    # Header row
+    header = Text()
+    header.append("AGENT  ", style=_AGENT_COLOR)
+    header.append(event.node_name, style="bold")
+    header.append(f"  [{model}]", style=_DIM)
+    node = tree.add(header) if tree else None
+
+    # Tools row
+    if tools:
+        tool_text = Text()
+        tool_text.append("  tools  ", style=_DIM)
+        tool_text.append(", ".join(tools), style=_TOOL_COLOR)
+        if node:
+            node.add(tool_text)
+        else:
+            console.print(f"{pad}  {tool_text}")
+    else:
+        dim = Text("  tools  none", style=_DIM)
+        if node:
+            node.add(dim)
+
+    # Context row
+    if ctx_l:
+        ctx_text = Text()
+        ctx_text.append("  context  ", style=_DIM)
+        ctx_text.append(", ".join(ctx_l), style=_CTX_COLOR)
+        if node:
+            node.add(ctx_text)
+    if node and verbose and ctx_scores:
+        rows = [
+            f"{item.get('name')}: score={item.get('score')} "
+            f"source={item.get('source')} hops={item.get('hops')}"
+            for item in ctx_scores
+        ]
+        node.add(Text("  ranked  " + " | ".join(rows), style=_DIM))
+
+    # Children (context_inject, tool_call, agent_end, routing)
+    for child in children.get(event.event_id, []):
+        _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
+
+def _render_context_inject_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `context_inject` event: injected context names and selection detail."""
+    p = event.payload
+    pad = "  " * depth
+    names    = p.get("context_names", [])
+    count    = p.get("count", 0)
+    selected = p.get("selected_contexts", [])
+    label    = Text()
+    label.append("  CONTEXT  ", style=_CTX_COLOR)
+    label.append(f"{count} node{'s' if count != 1 else ''}  ", style=_DIM)
+    label.append(", ".join(names), style=_CTX_COLOR)
+    if tree:
+        node = tree.add(label)
+        if verbose and selected:
+            for item in selected:
+                details = (
+                    f"{item.get('name')}  score={item.get('score')}  "
+                    f"source={item.get('source')}  hops={item.get('hops')}  "
+                    f"tokens={item.get('token_count')}"
+                )
+                node.add(Text(details, style=_DIM))
+                reasons = item.get("reasons") or []
+                if reasons:
+                    node.add(Text("reasons: " + ", ".join(reasons), style=_DIM))
+    else:
+        console.print(f"{pad}{label}")
+
+def _render_tool_call_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `tool_call` event: name, ref, input panel, then tool_result children."""
+    p = event.payload
+    inp   = p.get("input", {})
+    ref   = p.get("callable_ref", "")
+    label = Text()
+    label.append("  TOOL CALL  ", style=_TOOL_COLOR)
+    label.append(event.node_name, style="bold yellow")
+    if ref:
+        label.append(f"  [{ref}]", style=_DIM)
+
+    node = tree.add(label) if tree else None
+
+    # Input panel
+    inp_widget = _json_panel(inp, "input", "yellow", verbose)
+    if node:
+        node.add(inp_widget)
+    else:
+        console.print(inp_widget)
+
+    # Children (tool_result)
+    for child in children.get(event.event_id, []):
+        _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
+
+
+def _render_tool_result_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `tool_result` event: status, timing, output preview."""
+    p = event.payload
+    success = p.get("success", True)
+    summary = p.get("output_summary", "")
+    ms      = _fmt_ms(event.duration_ms)
+    color   = _RESULT_OK if success else _RESULT_ERR
+    status  = "ok" if success else "ERROR"
+
+    label = Text()
+    label.append("  TOOL RESULT  ", style=color)
+    label.append(event.node_name, style="bold")
+    label.append(f"  {status}  ", style=color)
+    if ms:
+        label.append(f"  {ms}", style=_DIM)
+
+    node = tree.add(label) if tree else None
+
+    # Output preview
+    out_text = Text(_truncate(summary, 200) if not verbose else summary, style=_DIM)
+    if node:
+        node.add(out_text)
+    elif verbose:
+        console.print(out_text)
+
+def _render_agent_end_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render an `agent_end` event: intent, iterations, timing, output summary."""
+    p = event.payload
+    summary = p.get("text_summary", "")
+    intent  = p.get("intent", "default")
+    iters   = p.get("iterations", 1)
+    ms      = _fmt_ms(event.duration_ms)
+
+    label = Text()
+    label.append("  AGENT END  ", style=_AGENT_COLOR)
+    label.append("intent=", style=_DIM)
+    label.append(intent, style="bold magenta")
+    if iters > 1:
+        label.append(f"  iters={iters}", style=_DIM)
+    if ms:
+        label.append(f"  {ms}", style=_DIM)
+
+    node = tree.add(label) if tree else None
+
+    if summary:
+        out_text = Text(f'  "{_truncate(summary, 300 if verbose else 100)}"', style=_DIM)
+        if node:
+            node.add(out_text)
+        else:
+            console.print(out_text)
+
+def _render_routing_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `routing` event: intent → next node, with a low-confidence marker."""
+    p = event.payload
+    pad = "  " * depth
+    intent  = p.get("intent", "default")
+    next_id = p.get("next_node_id") or "__END__"
+    conf    = p.get("confidence")
+
+    label = Text()
+    label.append("  ROUTING  ", style=_ROUTING_COLOR)
+    label.append(intent, style="bold magenta")
+    label.append(" → ", style=_DIM)
+    label.append(next_id, style="cyan")
+    if conf is not None:
+        conf_style = _RESULT_ERR if conf < _LOW_CONFIDENCE else _DIM
+        label.append(f"  conf={conf:.0%}", style=conf_style)
+
+    if tree:
+        tree.add(label)
+    else:
+        console.print(f"{pad}{label}")
+
+
+def _render_subgraph_enter_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `subgraph_enter` event and recurse into the sub-graph's events."""
+    p = event.payload
+    label = Text()
+    label.append("  SUBGRAPH ↓  ", style="bold blue")
+    label.append(event.node_name)
+    label.append(f"  entry={p.get('entry_node_id', '')[:8]}", style=_DIM)
+    node = tree.add(label) if tree else None
+    for child in children.get(event.event_id, []):
+        _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
+
+
+def _render_subgraph_exit_event(
+    console:  Console,
+    event:    TraceEvent,
+    children: dict[str | None, list[TraceEvent]],
+    verbose:  bool,
+    depth:    int,
+    tree:     Tree | None = None,
+) -> None:
+    """Render a `subgraph_exit` event."""
+    pad = "  " * depth
+    label = Text()
+    label.append("  SUBGRAPH ↑  ", style="bold blue")
+    label.append(event.node_name)
+    label.append(f"  {_fmt_ms(event.duration_ms)}", style=_DIM)
+    if tree:
+        tree.add(label)
+    else:
+        console.print(f"{pad}{label}")
+
+
+_LOW_CONFIDENCE = 0.7   # routing confidence at or below this renders as an error
+
+_EVENT_RENDERERS: dict[str, Callable[..., None]] = {
+    "hop":             _render_hop_event,
+    "agent_start":     _render_agent_start_event,
+    "context_inject":  _render_context_inject_event,
+    "tool_call":       _render_tool_call_event,
+    "tool_result":     _render_tool_result_event,
+    "agent_end":       _render_agent_end_event,
+    "routing":         _render_routing_event,
+    "subgraph_enter":  _render_subgraph_enter_event,
+    "subgraph_exit":   _render_subgraph_exit_event,
+}
+
+
 def _render_event(
     console:  Console,
     event:    TraceEvent,
@@ -201,217 +507,9 @@ def _render_event(
     tree:     Tree | None = None,
 ) -> None:
     """Recursively render one event, attaching children to a rich Tree node."""
-    t = event.event_type
-    p = event.payload
-    pad = "  " * depth
-
-    match t:
-        # ── hop ─────────────────────────────────────────────────────────────
-        case "hop":
-            node_type = p.get("node_type", "").split(".")[-1].upper()
-            hop_num   = p.get("hop", "")
-            label     = Text()
-            label.append(f"HOP {hop_num}  ", style=_HOP_COLOR)
-            label.append(f"{node_type}  ", style=_DIM)
-            label.append(event.node_name, style=_AGENT_COLOR)
-            ms = _fmt_ms(event.duration_ms)
-            if ms:
-                label.append(f"  {ms}", style=_DIM)
-
-            branch = Tree(label)
-            for child in children.get(event.event_id, []):
-                _render_event(console, child, children, verbose, depth=0, tree=branch)
-
-            if tree:
-                tree.add(branch)
-            else:
-                console.print(branch)
-                console.print()
-
-        # ── agent_start ─────────────────────────────────────────────────────
-        case "agent_start":
-            model      = p.get("model", "?")
-            tools      = p.get("tools", [])
-            ctx_l      = p.get("context", [])
-            ctx_scores = p.get("context_scores", [])
-
-            # Header row
-            header = Text()
-            header.append("AGENT  ", style=_AGENT_COLOR)
-            header.append(event.node_name, style="bold")
-            header.append(f"  [{model}]", style=_DIM)
-            node = tree.add(header) if tree else None
-
-            # Tools row
-            if tools:
-                tool_text = Text()
-                tool_text.append("  tools  ", style=_DIM)
-                tool_text.append(", ".join(tools), style=_TOOL_COLOR)
-                if node:
-                    node.add(tool_text)
-                else:
-                    console.print(f"{pad}  {tool_text}")
-            else:
-                dim = Text("  tools  none", style=_DIM)
-                if node:
-                    node.add(dim)
-
-            # Context row
-            if ctx_l:
-                ctx_text = Text()
-                ctx_text.append("  context  ", style=_DIM)
-                ctx_text.append(", ".join(ctx_l), style=_CTX_COLOR)
-                if node:
-                    node.add(ctx_text)
-            if node and verbose and ctx_scores:
-                rows = [
-                    f"{item.get('name')}: score={item.get('score')} "
-                    f"source={item.get('source')} hops={item.get('hops')}"
-                    for item in ctx_scores
-                ]
-                node.add(Text("  ranked  " + " | ".join(rows), style=_DIM))
-
-            # Children (context_inject, tool_call, agent_end, routing)
-            for child in children.get(event.event_id, []):
-                _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
-
-        # ── context_inject ──────────────────────────────────────────────────
-        case "context_inject":
-            names    = p.get("context_names", [])
-            count    = p.get("count", 0)
-            selected = p.get("selected_contexts", [])
-            label    = Text()
-            label.append("  CONTEXT  ", style=_CTX_COLOR)
-            label.append(f"{count} node{'s' if count != 1 else ''}  ", style=_DIM)
-            label.append(", ".join(names), style=_CTX_COLOR)
-            if tree:
-                node = tree.add(label)
-                if verbose and selected:
-                    for item in selected:
-                        details = (
-                            f"{item.get('name')}  score={item.get('score')}  "
-                            f"source={item.get('source')}  hops={item.get('hops')}  "
-                            f"tokens={item.get('token_count')}"
-                        )
-                        node.add(Text(details, style=_DIM))
-                        reasons = item.get("reasons") or []
-                        if reasons:
-                            node.add(Text("reasons: " + ", ".join(reasons), style=_DIM))
-            else:
-                console.print(f"{pad}{label}")
-
-        # ── tool_call ────────────────────────────────────────────────────────
-        case "tool_call":
-            inp   = p.get("input", {})
-            ref   = p.get("callable_ref", "")
-            label = Text()
-            label.append("  TOOL CALL  ", style=_TOOL_COLOR)
-            label.append(event.node_name, style="bold yellow")
-            if ref:
-                label.append(f"  [{ref}]", style=_DIM)
-
-            node = tree.add(label) if tree else None
-
-            # Input panel
-            inp_widget = _json_panel(inp, "input", "yellow", verbose)
-            if node:
-                node.add(inp_widget)
-            else:
-                console.print(inp_widget)
-
-            # Children (tool_result)
-            for child in children.get(event.event_id, []):
-                _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
-
-        # ── tool_result ─────────────────────────────────────────────────────
-        case "tool_result":
-            success = p.get("success", True)
-            summary = p.get("output_summary", "")
-            ms      = _fmt_ms(event.duration_ms)
-            color   = _RESULT_OK if success else _RESULT_ERR
-            status  = "ok" if success else "ERROR"
-
-            label = Text()
-            label.append("  TOOL RESULT  ", style=color)
-            label.append(event.node_name, style="bold")
-            label.append(f"  {status}  ", style=color)
-            if ms:
-                label.append(f"  {ms}", style=_DIM)
-
-            node = tree.add(label) if tree else None
-
-            # Output preview
-            out_text = Text(_truncate(summary, 200) if not verbose else summary, style=_DIM)
-            if node:
-                node.add(out_text)
-            elif verbose:
-                console.print(out_text)
-
-        # ── agent_end ────────────────────────────────────────────────────────
-        case "agent_end":
-            summary = p.get("text_summary", "")
-            intent  = p.get("intent", "default")
-            iters   = p.get("iterations", 1)
-            ms      = _fmt_ms(event.duration_ms)
-
-            label = Text()
-            label.append("  AGENT END  ", style=_AGENT_COLOR)
-            label.append("intent=", style=_DIM)
-            label.append(intent, style="bold magenta")
-            if iters > 1:
-                label.append(f"  iters={iters}", style=_DIM)
-            if ms:
-                label.append(f"  {ms}", style=_DIM)
-
-            node = tree.add(label) if tree else None
-
-            if summary:
-                out_text = Text(f'  "{_truncate(summary, 300 if verbose else 100)}"', style=_DIM)
-                if node:
-                    node.add(out_text)
-                else:
-                    console.print(out_text)
-
-        # ── routing ──────────────────────────────────────────────────────────
-        case "routing":
-            intent  = p.get("intent", "default")
-            next_id = p.get("next_node_id") or "__END__"
-            conf    = p.get("confidence")
-
-            label = Text()
-            label.append("  ROUTING  ", style=_ROUTING_COLOR)
-            label.append(intent, style="bold magenta")
-            label.append(" → ", style=_DIM)
-            label.append(next_id, style="cyan")
-            if conf is not None:
-                conf_style = _RESULT_ERR if conf < 0.7 else _DIM
-                label.append(f"  conf={conf:.0%}", style=conf_style)
-
-            if tree:
-                tree.add(label)
-            else:
-                console.print(f"{pad}{label}")
-
-        # ── subgraph_enter ───────────────────────────────────────────────────
-        case "subgraph_enter":
-            label = Text()
-            label.append("  SUBGRAPH ↓  ", style="bold blue")
-            label.append(event.node_name)
-            label.append(f"  entry={p.get('entry_node_id', '')[:8]}", style=_DIM)
-            node = tree.add(label) if tree else None
-            for child in children.get(event.event_id, []):
-                _render_event(console, child, children, verbose, depth=depth, tree=node or tree)
-
-        # ── subgraph_exit ────────────────────────────────────────────────────
-        case "subgraph_exit":
-            label = Text()
-            label.append("  SUBGRAPH ↑  ", style="bold blue")
-            label.append(event.node_name)
-            label.append(f"  {_fmt_ms(event.duration_ms)}", style=_DIM)
-            if tree:
-                tree.add(label)
-            else:
-                console.print(f"{pad}{label}")
+    renderer = _EVENT_RENDERERS.get(event.event_type)
+    if renderer is not None:
+        renderer(console, event, children, verbose, depth, tree)
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +532,7 @@ def _render_summary(
     ctx_nodes   = sum(e.payload.get("count", 0) for e in ctx_injects)
     low_conf    = [
         e for e in routings
-        if e.payload.get("confidence") is not None and e.payload["confidence"] < 0.7
+        if e.payload.get("confidence") is not None and e.payload["confidence"] < _LOW_CONFIDENCE
     ]
 
     # Stats table
@@ -454,10 +552,7 @@ def _render_summary(
             f"[yellow]{len(low_conf)}[/yellow]",
         )
     if total_ms:
-        table.add_row(
-            "Total agent time",
-            f"{total_ms}ms" if total_ms < 1000 else f"{total_ms/1000:.1f}s",
-        )
+        table.add_row("Total agent time", _fmt_ms(total_ms))
 
     # Agents used
     agents_seen: list[str] = []

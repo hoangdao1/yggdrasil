@@ -97,7 +97,7 @@ def create_transform(
     )
 
 
-def create_reasoner(
+def create_reasoner(  # noqa: PLR0913 — mirrors ReasonerNode's constructor surface
     name: str,
     *,
     program: str = "",

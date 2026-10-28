@@ -15,6 +15,11 @@ from yggdrasil_lm.app import GraphApp
 from yggdrasil_lm.backends.llm import OpenAIBackend
 from yggdrasil_lm.testing import StubBackend, end_turn, max_tokens_truncated
 
+EXPECTED_MAX_TOKENS = 12345  # sentinel max_tokens forwarded to the backend
+TWO_BACKEND_CALLS = 2        # initial turn + one retry/nudge
+THREE_BACKEND_CALLS = 3      # initial turn + two bounded retries/escalations
+FOUR_BACKEND_CALLS = 4       # initial turn + three bounded corrections
+
 # ---------------------------------------------------------------------------
 # OpenAI backend: finish_reason mapping + reasoning capture
 # ---------------------------------------------------------------------------
@@ -71,7 +76,7 @@ async def test_openai_forwards_max_tokens():
     resp = _fake_openai_response(content="ok", finish_reason="stop")
     backend = _backend_returning(resp)
     await backend.chat(model="m", system="s", messages=[{"role": "user", "content": "x"}], tools=[], max_tokens=12345)
-    assert _backend_returning.last_kwargs["max_tokens"] == 12345
+    assert _backend_returning.last_kwargs["max_tokens"] == EXPECTED_MAX_TOKENS
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +99,7 @@ async def test_truncated_empty_turn_escalates_then_completes():
     # Completed with the real answer, not an empty result.
     assert ctx.outputs[sub.node_id]["text"] == "DONE"
     # Two turns; the second ran with an escalated (doubled) token budget.
-    assert len(backend.max_tokens_seen) == 2
+    assert len(backend.max_tokens_seen) == TWO_BACKEND_CALLS
     assert backend.max_tokens_seen[1] == backend.max_tokens_seen[0] * 2
 
 
@@ -109,7 +114,7 @@ async def test_persistent_truncation_gives_up_bounded_and_salvages_reasoning():
     ctx = await app.run_subgraph(sub, query="go")
 
     # Bounded: initial call + 2 escalations = 3 chat calls, then terminate (not max_iterations=10).
-    assert len(backend.max_tokens_seen) == 3
+    assert len(backend.max_tokens_seen) == THREE_BACKEND_CALLS
     assert backend.max_tokens_seen == [8096, 16192, 32000]
     # Never surfaces an empty result — the chain-of-thought is salvaged.
     assert ctx.outputs[sub.node_id]["text"] == "all in the head"
@@ -252,7 +257,7 @@ async def test_unparsed_tool_call_is_corrected_then_agent_continues():
 
     # The real answer, not the raw markup.
     assert ctx.outputs[sub.node_id]["text"] == "DONE"
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == TWO_BACKEND_CALLS
     # The second turn was told its call had not run.
     second_turn_messages = backend.calls[1][2]
     assert any("was NOT executed" in str(m.get("content", "")) for m in second_turn_messages)
@@ -270,7 +275,7 @@ async def test_persistent_unparsed_tool_calls_terminate_bounded():
     ctx = await app.run_subgraph(sub, query="go")
 
     # initial turn + 3 bounded corrections, then terminal — not max_iterations.
-    assert len(backend.calls) == 4
+    assert len(backend.calls) == FOUR_BACKEND_CALLS
     # The markup is still surfaced as the result rather than an empty string, so a
     # downstream done-criteria check reports what the model actually produced.
     assert "get_step_status" in ctx.outputs[sub.node_id]["text"]
@@ -476,7 +481,7 @@ async def test_narration_turn_is_nudged_then_the_agent_finishes():
     ctx = await app.run_subgraph(sub, query="reconcile")
 
     assert ctx.outputs[sub.node_id]["text"].startswith("Wrote 5")
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == TWO_BACKEND_CALLS
     assert any("did not finish the task" in str(m.get("content", ""))
                for m in backend.calls[1][2])
 
@@ -491,7 +496,7 @@ async def test_persistent_narration_terminates_bounded():
     await app.run_subgraph(sub, query="reconcile")
 
     # initial turn + 2 bounded nudges, then accept — not max_iterations.
-    assert len(backend.calls) == 3
+    assert len(backend.calls) == THREE_BACKEND_CALLS
 
 
 # ── "done" means the artefacts exist (S3) ────────────────────────────────────
@@ -551,7 +556,7 @@ async def test_agent_is_told_to_write_its_missing_output_then_finishes(tmp_path)
 
     def _respond(*_a):
         # Second turn: actually create the artefact, then claim completion again.
-        if len(backend.calls) >= 2:
+        if len(backend.calls) >= TWO_BACKEND_CALLS:
             out.write_text("[]")
         return end_turn("Wrote the shard output.")
 
@@ -565,7 +570,7 @@ async def test_agent_is_told_to_write_its_missing_output_then_finishes(tmp_path)
     await app.run_subgraph(sub, query="reconcile")
 
     assert out.exists()
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == TWO_BACKEND_CALLS
     assert any("do not exist yet" in str(m.get("content", ""))
                for m in backend.calls[1][2])
 
@@ -582,4 +587,4 @@ async def test_persistently_absent_output_terminates_bounded(tmp_path):
     await app.run_subgraph(sub, query="go")
 
     # initial turn + 2 bounded nudges, then accept — never max_iterations.
-    assert len(backend.calls) == 3
+    assert len(backend.calls) == THREE_BACKEND_CALLS

@@ -41,6 +41,60 @@ Read these in order:
   - safe evolution over time
 - Add at least one focused test and one documentation touchpoint for user-facing features.
 
+## Code Style: Declarative by Default
+
+Enforced by automated gates — `make check` fails on violations; nothing here is
+optional or review-dependent. Two rules anchor the style:
+
+### 1. Prefer declarations over imperative step-by-step code
+
+Write *what* you want, not a manual recipe for producing it. Concretely (each
+item is a ruff rule, active in `[tool.ruff.lint]`):
+
+- Comprehensions over accumulator loops: `rows = [fmt(m) for m in results]`,
+  not `rows = []` + `for m in results: rows.append(...)` (`PERF401`)
+- `any()` / `all()` over flag loops that scan for a condition (`PERF` family)
+- Dict/set comprehensions and `dict(...)` over manual key-by-key building
+  (`C4`, `PERF403`); `dict.fromkeys(...)` over `{x: 0 for x in xs}` (`C420`)
+- `contextlib.suppress(SpecificError)` over `try/except/pass` (`SIM105`)
+- Simple ternaries and flattened control flow over nested if/else pyramids (`SIM`)
+
+Data-driven dispatch beats long `match`/`if` chains: when a function's branches
+map inputs to independent behaviours, put the behaviours in a dict of small
+functions (see `_RULE_COMPARATORS` in `core/executor.py` or `_EVENT_RENDERERS`
+in `trace_ui.py`).
+
+### 2. No monster functions
+
+Every function must fit the budgets below. They describe a function a reader
+can hold in their head; extract a focused, well-named private helper when a
+budget is exceeded — prefer many small helpers over one magical one.
+
+| Budget | Limit | Enforced by |
+|---|---|---|
+| Body lines | 80 (docstring excluded) | `tests/test_code_quality.py` (AST gate) |
+| Statements | 50 | ruff `PLR0915` |
+| Branches | 12 | ruff `PLR0912` |
+| Return statements | 6 | ruff `PLR0911` |
+| Arguments | 8 (public APIs with a justified wider surface may carry a scoped `# noqa: PLR0913` + reason) | ruff `PLR0913` |
+| Cyclomatic complexity | 10 | ruff `C901` |
+
+Magic values in comparisons are banned (`PLR2004`): name them
+(`_LOW_CONFIDENCE_THRESHOLD = 0.7`) so the number carries its meaning.
+
+### The gates and how to run them
+
+```bash
+make lint        # ruff: declarative-style + function-quality rules
+make typecheck   # mypy --strict
+make test        # behaviour tests + tests/test_code_quality.py AST gates
+make check       # all of the above
+```
+
+Commit-time: `pre-commit run --all-files` (ruff). CI runs the full
+`make check` on every PR — a new monster function or imperative accumulator
+loop will fail the build.
+
 ## Guidance For LLM Coding Tools
 
 LLM agents do better in this repo when changes stay local and explicit.
@@ -77,8 +131,9 @@ LLM agents do better in this repo when changes stay local and explicit.
 Typical local verification:
 
 ```bash
-python3 -m pytest tests -q
-python3 -m mypy            # strict; config in pyproject.toml [tool.mypy]
+make check                    # ruff + mypy --strict + pytest (incl. quality gates)
+python3 -m pytest tests -q    # behaviour tests + tests/test_code_quality.py
+python3 -m mypy               # strict; config in pyproject.toml [tool.mypy]
 ```
 
 The package is type-checked with `mypy --strict`. New code needs full

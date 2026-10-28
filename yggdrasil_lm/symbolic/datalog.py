@@ -164,6 +164,8 @@ _VAR_RE = re.compile(r"^\?[A-Za-z_][A-Za-z0-9_]*$")
 _ATOM_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$", re.DOTALL)
 _INT_RE = re.compile(r"^[+-]?\d+$")
 _FLOAT_RE = re.compile(r"^[+-]?(\d+\.\d*|\.\d+|\d+)([eE][+-]?\d+)?$")
+_QUOTE_CHARS = frozenset({"'", '"'})
+_MIN_QUOTED_LEN = 2   # a quoted token is at least opening + closing quote
 
 
 def _strip_comments(text: str) -> str:
@@ -222,9 +224,7 @@ def _parse_term(token: str) -> Term:
         if not _VAR_RE.match(token):
             raise ParseError(f"invalid variable: {token!r}")
         return Var(token[1:])
-    if (token[0] == '"' and token[-1] == '"' and len(token) >= 2) or (
-        token[0] == "'" and token[-1] == "'" and len(token) >= 2
-    ):
+    if len(token) >= _MIN_QUOTED_LEN and token[0] == token[-1] and token[0] in _QUOTE_CHARS:
         return Const(token[1:-1])
     if _INT_RE.match(token):
         return Const(int(token))
@@ -592,39 +592,34 @@ def _compile_rule(rule: Rule) -> Rule:
 # Stratification
 # ---------------------------------------------------------------------------
 
-def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
-    """Assign each intensional predicate a stratum number.
+def _relax_strata(
+    rules: list[Rule],
+    intensional: set[str],
+    stratum: dict[str, int],
+) -> bool:
+    """One fixpoint pass over the stratum assignment; True when any stratum grew."""
+    changed = False
+    for rule in rules:
+        head_pred = rule.head.predicate
+        for lit in rule.body:
+            if not isinstance(lit, Atom):
+                continue
+            q = lit.predicate
+            if q not in intensional:
+                continue
+            required = stratum[q] + (1 if lit.negated else 0)
+            if required > stratum[head_pred]:
+                stratum[head_pred] = required
+                changed = True
+    return changed
 
-    Constraint: for a rule with head P,
-      * positive body pred Q (intensional) => stratum(P) >= stratum(Q)
-      * negated  body pred Q (intensional) => stratum(P) >  stratum(Q)
-    A program recursing through negation has no finite assignment -> error.
-    """
-    stratum: dict[str, int] = {p: 0 for p in intensional}
-    max_iters = len(intensional) + 1
-    for _ in range(max_iters):
-        changed = False
-        for rule in rules:
-            head_pred = rule.head.predicate
-            for lit in rule.body:
-                if not isinstance(lit, Atom):
-                    continue
-                q = lit.predicate
-                if q not in intensional:
-                    continue
-                required = stratum[q] + (1 if lit.negated else 0)
-                if required > stratum[head_pred]:
-                    stratum[head_pred] = required
-                    changed = True
-        if not changed:
-            break
-    else:
-        # Did not converge within the bound -> negative cycle.
-        raise StratificationError(
-            "program cannot be stratified: recursion through negation detected"
-        )
 
-    # Re-verify (a converged-but-violating assignment also means a neg cycle).
+def _verify_stratification(
+    rules: list[Rule],
+    intensional: set[str],
+    stratum: dict[str, int],
+) -> None:
+    """A converged-but-violating assignment also means a negation cycle."""
     for rule in rules:
         for lit in rule.body:
             if (isinstance(lit, Atom) and lit.negated and lit.predicate in intensional
@@ -633,6 +628,29 @@ def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
                         f"program cannot be stratified: negated {lit.predicate!r} "
                         f"is recursively derived with {rule.head.predicate!r}"
                     )
+
+
+def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
+    """Assign each intensional predicate a stratum number.
+
+    Constraint: for a rule with head P,
+      * positive body pred Q (intensional) => stratum(P) >= stratum(Q)
+      * negated  body pred Q (intensional) => stratum(P) >  stratum(Q)
+    A program recursing through negation has no finite assignment -> error.
+    """
+    stratum: dict[str, int] = dict.fromkeys(intensional, 0)
+    max_iters = len(intensional) + 1
+    for _ in range(max_iters):
+        if not _relax_strata(rules, intensional, stratum):
+            break
+    else:
+        # Did not converge within the bound -> negative cycle.
+        raise StratificationError(
+            "program cannot be stratified: recursion through negation detected"
+        )
+
+    # Re-verify (a converged-but-violating assignment also means a neg cycle).
+    _verify_stratification(rules, intensional, stratum)
 
     groups: dict[int, set[str]] = {}
     for pred, s in stratum.items():
@@ -643,6 +661,20 @@ def _stratify(rules: list[Rule], intensional: set[str]) -> list[set[str]]:
 # ---------------------------------------------------------------------------
 # Body matching (backtracking join)
 # ---------------------------------------------------------------------------
+
+def _iter_atom_unifications(
+    lit: Atom,
+    db: set[GroundFact],
+    binding: dict[str, Any],
+) -> Iterator[tuple[dict[str, Any], GroundFact]]:
+    """Yield ``(new_binding, fact)`` for every ground fact the atom unifies with."""
+    for f in db:
+        if f[0] != lit.predicate or (len(f) - 1) != lit.arity:
+            continue
+        nb = _unify(lit.terms, f[1:], binding)
+        if nb is not None:
+            yield nb, f
+
 
 def _match_body(
     body: tuple[BodyLiteral, ...],
@@ -669,14 +701,10 @@ def _match_body(
                 return
             case Atom():
                 # Positive atom: join with every matching ground fact.
-                for f in db:
-                    if f[0] != lit.predicate or (len(f) - 1) != lit.arity:
-                        continue
-                    nb = _unify(lit.terms, f[1:], binding)
-                    if nb is not None:
-                        support.append(f)
-                        yield from rec(i + 1, nb, support)
-                        support.pop()
+                for nb, f in _iter_atom_unifications(lit, db, binding):
+                    support.append(f)
+                    yield from rec(i + 1, nb, support)
+                    support.pop()
 
     yield from rec(0, {}, [])
 

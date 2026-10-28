@@ -1,0 +1,15 @@
+# Local commit-time checks. Install once:
+#   pip install pre-commit && pre-commit install
+# Run on the whole repo:
+#   pre-commit run --all-files
+#
+# Deliberately fast: only ruff runs here. The full gate (strict mypy, pytest
+# incl. the AST quality gates in tests/test_code_quality.py) runs in CI via
+# `make check`.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep in sync with the ruff pin in pyproject.toml [project.optional-dependencies].dev
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]

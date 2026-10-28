@@ -13,6 +13,7 @@ Usage (standalone):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import time
 
@@ -150,10 +151,9 @@ def _extract_metrics_from_ctx(
 
     passed = False
     if not error:
-        try:
+        # A crashing eval counts as a fail.
+        with contextlib.suppress(Exception):
             passed = task.eval_fn(final_output)
-        except Exception:  # noqa: BLE001, S110 — a crashing eval counts as a fail
-            pass
 
     return RunMetrics(
         system=backend_label,

@@ -1,12 +1,14 @@
+# Always use the project venv's pinned tools (ruff is pinned in
+# [project.optional-dependencies].dev) — global installs drift.
 .PHONY: test typecheck lint check
 
 test:
-	pytest
+	.venv/bin/python -m pytest
 
 typecheck:
-	mypy
+	.venv/bin/python -m mypy
 
 lint:
-	ruff check .
+	.venv/bin/ruff check .
 
 check: lint typecheck test

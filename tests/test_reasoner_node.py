@@ -10,6 +10,8 @@ from yggdrasil_lm import GraphApp
 from yggdrasil_lm.core.edges import Edge, EdgeType
 from yggdrasil_lm.testing import StubBackend, end_turn
 
+EXPECTED_FACT_COUNT = 3  # ancestor facts: (a,b), (b,c), (a,c)
+
 
 @pytest.mark.asyncio
 async def test_reasoner_from_state_facts():
@@ -32,10 +34,10 @@ async def test_reasoner_from_state_facts():
     out = ctx.outputs[reasoner.node_id]
     preds = {(f["predicate"], tuple(f["args"])) for f in out["facts"]}
     assert ("ancestor", ("a", "c")) in preds
-    assert out["fact_count"] == 3
+    assert out["fact_count"] == EXPECTED_FACT_COUNT
     assert out["proofs"]  # proof recorded
     # Output also written to state under output_key.
-    assert ctx.state.data["inferred"]["fact_count"] == 3
+    assert ctx.state.data["inferred"]["fact_count"] == EXPECTED_FACT_COUNT
 
 
 @pytest.mark.asyncio

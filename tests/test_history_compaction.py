@@ -13,6 +13,7 @@ from yggdrasil_lm.core.executor import (
 )
 
 BIG = "X" * 5000
+EXPECTED_TOOL_MESSAGE_COUNT = 8  # tool_use/tool_call messages that must survive
 
 
 def _anthropic_history(pairs: int):
@@ -43,7 +44,8 @@ def test_preserves_tool_use_blocks_for_pairing():
     _compact_history(msgs)
     tool_uses = sum(1 for m in msgs for b in (m.get("content") or [])
                     if isinstance(b, dict) and b.get("type") == "tool_use")
-    assert tool_uses == 8   # every tool_use survives (else the API rejects the request)
+    # Every tool_use survives (else the API rejects the request).
+    assert tool_uses == EXPECTED_TOOL_MESSAGE_COUNT
 
 
 def test_openai_shape_preserves_tool_calls():
@@ -55,7 +57,7 @@ def test_openai_shape_preserves_tool_calls():
         msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "RES " + BIG})
     _compact_history(msgs)
     tool_calls = sum(len(m.get("tool_calls", [])) for m in msgs)
-    assert tool_calls == 8
+    assert tool_calls == EXPECTED_TOOL_MESSAGE_COUNT
     assert _HISTORY_ELIDE_MARK in str(msgs)
 
 
